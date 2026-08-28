@@ -8,7 +8,6 @@
     let unregisterClearRoleSwap = null;
     let unpatchCosmeticSend = null;
     let unpatchRoleReadLayer = null;
-    let unpatchHierarchyLayer = null;
 
     const storage = (() => {
         try {
@@ -721,218 +720,6 @@
         };
     }
 
-
-    function rowUserId(row) {
-        if (!row) return "";
-        return String(
-            row?.user?.id ??
-            row?.member?.user?.id ??
-            row?.member?.userId ??
-            row?.member?.user_id ??
-            row?.userId ??
-            row?.user_id ??
-            row?.id ??
-            ""
-        );
-    }
-
-    function cloneListValue(value) {
-        if (Array.isArray(value)) return value.map(cloneListValue);
-        if (!value || typeof value !== "object") return value;
-        try {
-            const out = { ...value };
-            for (const key of Object.keys(out)) {
-                if (
-                    key === "rows" ||
-                    key === "items" ||
-                    key === "members" ||
-                    key === "sections" ||
-                    key === "groups"
-                ) {
-                    out[key] = cloneListValue(out[key]);
-                }
-            }
-            return out;
-        } catch {
-            return value;
-        }
-    }
-
-    function swapRowsInArray(arr, myUserId, targetUserId) {
-        if (!Array.isArray(arr)) return false;
-
-        let myLoc = null;
-        let targetLoc = null;
-
-        const walk = (list, parentPath = []) => {
-            if (!Array.isArray(list)) return;
-
-            for (let i = 0; i < list.length; i++) {
-                const item = list[i];
-                const uid = rowUserId(item);
-
-                if (uid === myUserId && !myLoc) {
-                    myLoc = { list, index: i, item };
-                }
-                if (uid === targetUserId && !targetLoc) {
-                    targetLoc = { list, index: i, item };
-                }
-
-                if (item && typeof item === "object") {
-                    for (const key of ["rows", "items", "members", "sections", "groups"]) {
-                        if (Array.isArray(item[key])) {
-                            walk(item[key], parentPath.concat([i, key]));
-                        }
-                    }
-                }
-            }
-        };
-
-        walk(arr);
-
-        if (!myLoc || !targetLoc) return false;
-
-        const temp = myLoc.list[myLoc.index];
-        myLoc.list[myLoc.index] = targetLoc.list[targetLoc.index];
-        targetLoc.list[targetLoc.index] = temp;
-        return true;
-    }
-
-    function spoofHierarchyResult(result, guildId) {
-        if (!result) return result;
-
-        const record = storage.roleSwaps.find(
-            x => String(x?.guildId) === String(guildId)
-        );
-        if (!record) return result;
-
-        const myUserId = String(record.myUserId ?? "");
-        const targetUserId = String(record.targetUserId ?? "");
-        if (!myUserId || !targetUserId) return result;
-
-        const cloned = cloneListValue(result);
-
-        try {
-            if (Array.isArray(cloned)) {
-                swapRowsInArray(cloned, myUserId, targetUserId);
-                return cloned;
-            }
-
-            if (cloned && typeof cloned === "object") {
-                for (const key of ["rows", "items", "members", "sections", "groups"]) {
-                    if (Array.isArray(cloned[key])) {
-                        swapRowsInArray(cloned[key], myUserId, targetUserId);
-                    }
-                }
-            }
-        } catch {}
-
-        return cloned;
-    }
-
-    function installHierarchyLayer() {
-        const metro = vendetta?.metro;
-        const patcher = vendetta?.patcher;
-        if (!metro?.findByProps || !patcher?.after) {
-            throw new Error("Kettu patcher API unavailable.");
-        }
-
-        // Current Discord builds have changed member-list module names repeatedly.
-        // Probe for several known/likely getter combinations and patch only
-        // read methods that return list/section/row structures.
-        const candidates = [];
-        const seen = new Set();
-
-        const add = mod => {
-            if (!mod || typeof mod !== "object" || seen.has(mod)) return;
-            seen.add(mod);
-            candidates.push(mod);
-        };
-
-        const propSets = [
-            ["getMemberListSections"],
-            ["getMemberListSection"],
-            ["getMemberList"],
-            ["getRows"],
-            ["getSections"],
-            ["getGroups"],
-            ["getMemberListRows"],
-            ["getGuildMemberList"],
-            ["getMemberListState"],
-            ["getMemberListSections", "getMemberListRows"],
-            ["getSections", "getRows"]
-        ];
-
-        for (const props of propSets) {
-            try { add(metro.findByProps(...props)); } catch {}
-        }
-
-        const unpatches = [];
-        const methodNames = [
-            "getMemberListSections",
-            "getMemberListSection",
-            "getMemberList",
-            "getRows",
-            "getSections",
-            "getGroups",
-            "getMemberListRows",
-            "getGuildMemberList",
-            "getMemberListState"
-        ];
-
-        for (const mod of candidates) {
-            for (const method of methodNames) {
-                if (typeof mod?.[method] !== "function") continue;
-
-                try {
-                    const unpatch = patcher.after(method, mod, (args, result) => {
-                        let guildId = "";
-
-                        // Common signatures: (guildId), (guildId, channelId),
-                        // or ({ guildId, ... })
-                        const first = args?.[0];
-                        if (typeof first === "string") {
-                            guildId = first;
-                        } else if (first && typeof first === "object") {
-                            guildId = String(
-                                first.guildId ??
-                                first.guild_id ??
-                                first.id ??
-                                ""
-                            );
-                        }
-
-                        if (!guildId) {
-                            try {
-                                const SelectedGuildStore =
-                                    metro.findByProps("getGuildId", "getLastSelectedGuildId") ||
-                                    metro.findByProps("getGuildId");
-                                guildId = String(SelectedGuildStore?.getGuildId?.() ?? "");
-                            } catch {}
-                        }
-
-                        if (!guildId) return result;
-                        return spoofHierarchyResult(result, guildId);
-                    });
-
-                    if (typeof unpatch === "function") unpatches.push(unpatch);
-                } catch {}
-            }
-        }
-
-        try {
-            vendetta?.logger?.info?.(
-                `[${PLUGIN_NAME}] hierarchy-layer patched ${unpatches.length} getter(s)`
-            );
-        } catch {}
-
-        return () => {
-            for (const unpatch of unpatches.reverse()) {
-                try { unpatch(); } catch {}
-            }
-        };
-    }
-
     function roleModules() {
         const metro = vendetta?.metro;
         if (!metro?.findByProps) throw new Error("Kettu Metro API unavailable.");
@@ -1335,6 +1122,7 @@
             let injected = 0;
             let opened = 0;
             let failed = 0;
+            const failureDetails = [];
 
             // Conservative pacing for stability and normal API usage.
             const OPEN_SETTLE_MS = 1500;
@@ -1385,6 +1173,16 @@
                     injected++;
                 } catch (err) {
                     failed++;
+
+                    const reason =
+                        err?.message ??
+                        err?.name ??
+                        String(err ?? "unknown failure");
+
+                    failureDetails.push(
+                        `${userId} — ${reason || "unknown failure"}`
+                    );
+
                     try {
                         vendetta?.logger?.error?.(
                             `[${PLUGIN_NAME}] target ${userId}`,
@@ -1401,7 +1199,10 @@
             toast(
                 `SDM Bulk: ${injected}/${ids.length} injected • ${opened} opened` +
                 (failed ? ` • ${failed} failed` : "") +
-                ` • silent stable pacing`
+                (failureDetails.length
+                    ? `\n${failureDetails.slice(0, 5).join("\n")}`
+                    : "") +
+                `\n• silent stable pacing`
             );
         } catch (err) {
             try { vendetta?.logger?.error?.(`[${PLUGIN_NAME}]`, err); } catch {}
@@ -1451,18 +1252,6 @@
 
     return {
         onLoad() {
-            try {
-                unpatchHierarchyLayer = installHierarchyLayer();
-            } catch (err) {
-                try {
-                    vendetta?.logger?.error?.(
-                        `[${PLUGIN_NAME}] hierarchy-layer-install`,
-                        err
-                    );
-                } catch {}
-            }
-
-
             try {
                 unpatchRoleReadLayer = installRoleReadLayer();
             } catch (err) {
@@ -1609,14 +1398,6 @@
         },
 
         onUnload() {
-            try {
-                if (typeof unpatchHierarchyLayer === "function") {
-                    unpatchHierarchyLayer();
-                }
-            } catch {}
-            unpatchHierarchyLayer = null;
-
-
             try {
                 if (typeof unpatchRoleReadLayer === "function") {
                     unpatchRoleReadLayer();
