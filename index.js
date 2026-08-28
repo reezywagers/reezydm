@@ -66,13 +66,18 @@
 
         const Dispatcher = metro.findByProps("dispatch", "subscribe");
         const UserStore = metro.findByProps("getUser", "getCurrentUser");
-        const ChannelStore = metro.findByProps("getChannel", "getDMFromUserId");
+        const ChannelStore =
+            metro.findByProps("getMutablePrivateChannels", "getDMFromUserId") ||
+            metro.findByProps("getChannel", "getDMFromUserId");
+
+        const PrivateChannelSortStore =
+            metro.findByProps("getPrivateChannelIds", "getSortedChannels");
 
         if (!Dispatcher?.dispatch) throw new Error("Could not find Flux dispatcher.");
         if (!UserStore?.getUser) throw new Error("Could not find UserStore.");
         if (!ChannelStore?.getDMFromUserId) throw new Error("Could not find ChannelStore.");
 
-        return { Dispatcher, UserStore, ChannelStore };
+        return { Dispatcher, UserStore, ChannelStore, PrivateChannelSortStore };
     }
 
     function fakeSnowflakeFromTimestamp(timestampMs, offset = 0) {
@@ -139,18 +144,38 @@
         return result;
     }
 
-    function createLocalDm(Dispatcher, user, channelId, lastMessageId) {
+    function buildDmChannel(user, channelId, lastMessageId) {
+        return {
+            id: channelId,
+            type: 1,
+            flags: 0,
+            recipients: [user],
+            recipient_ids: [user.id],
+            last_message_id: lastMessageId,
+            is_spam: false,
+            owner_id: null,
+            name: null,
+            icon: null
+        };
+    }
+
+    function installIntoMutablePrivateChannels(ChannelStore, channel) {
+        // Crash-safe: never mutate Discord internal channel collections directly.
+        return false;
+    }
+
+    function createLocalDm(Dispatcher, ChannelStore, user, channelId, lastMessageId) {
+        const channel = buildDmChannel(user, channelId, lastMessageId);
+
+        const inserted = installIntoMutablePrivateChannels(ChannelStore, channel);
+
+        // Tell Flux stores/components that a new private channel exists.
         Dispatcher.dispatch({
             type: "CHANNEL_CREATE",
-            channel: {
-                id: channelId,
-                type: 1,
-                flags: 0,
-                recipients: [user],
-                last_message_id: lastMessageId,
-                is_spam: false
-            }
+            channel
         });
+
+        return inserted;
     }
 
     function dispatchFakeIncoming(Dispatcher, record) {
@@ -183,8 +208,8 @@
     }
 
     function replayRecord(record) {
-        const { Dispatcher } = modules();
-        createLocalDm(Dispatcher, record.user, record.channelId, record.messageId);
+        const { Dispatcher, ChannelStore } = modules();
+        createLocalDm(Dispatcher, ChannelStore, record.user, record.channelId, record.messageId);
         dispatchFakeIncoming(Dispatcher, record);
     }
 
@@ -391,6 +416,7 @@
 
             const { Dispatcher, UserStore, ChannelStore } = modules();
             let injected = 0;
+            let privateStoreInserted = 0;
 
             for (let i = 0; i < ids.length; i++) {
                 const userId = ids[i];
@@ -400,7 +426,13 @@
                 if (!user) user = fallbackUser(userId);
 
                 let channelId = null;
-                try { channelId = ChannelStore.getDMFromUserId(userId); } catch {}
+                try {
+                    const existingDm = ChannelStore.getDMFromUserId(userId);
+                    channelId =
+                        typeof existingDm === "string"
+                            ? existingDm
+                            : existingDm?.id ?? null;
+                } catch {}
 
                 const previous = storage.spoofDMs.find(x => x.userId === userId);
 
@@ -424,14 +456,18 @@
                     timestamp
                 };
 
-                createLocalDm(Dispatcher, user, channelId, messageId);
+                if (createLocalDm(Dispatcher, ChannelStore, user, channelId, messageId)) {
+                    privateStoreInserted++;
+                }
                 dispatchFakeIncoming(Dispatcher, record);
                 saveRecord(record);
                 injected++;
             }
 
             const shown = baseTimestamp.toLocaleString();
-            toast(`SDM Bulk: injected ${injected} fake DM${injected === 1 ? "" : "s"} • ${shown}`);
+            toast(
+                `SDM Bulk: ${injected} fake DM${injected === 1 ? "" : "s"} injected • private store ${privateStoreInserted}/${injected} • ${shown}`
+            );
         } catch (err) {
             try { vendetta?.logger?.error?.(`[${PLUGIN_NAME}]`, err); } catch {}
             toast(`SDM Bulk error: ${err?.message || String(err)}`);
@@ -483,21 +519,8 @@
     }
 
     function restorePersistentDMs() {
-        if (!storage.spoofDMs.length) return;
-
-        setTimeout(() => {
-            let restored = 0;
-            for (const record of storage.spoofDMs) {
-                try {
-                    replayRecord(record);
-                    restored++;
-                } catch {}
-            }
-
-            if (restored) {
-                toast(`SDM Bulk: restored ${restored} spoofed DM${restored === 1 ? "" : "s"}.`);
-            }
-        }, 1500);
+        // Crash-safe: don't replay synthetic Discord events during startup.
+        return;
     }
 
     return {
@@ -623,7 +646,6 @@
             });
 
             restorePersistentDMs();
-            restoreRoleSwaps();
             toast("SDM Bulk enabled.");
         },
 
