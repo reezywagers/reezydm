@@ -1,13 +1,13 @@
 {
-  "name": "Kettu SDM Toolkit Stable",
-  "description": "Stable local-only toolkit using Discord's real DM opener with conservative sequential pacing.",
+  "name": "Reezy Mass DM",
+  "description": "Local-only fake DM plugin.",
   "authors": [
     {
       "name": "reezywagers"
     }
   ],
   "main": "index.js",
-  "hash": "ad546be84b56dc05554b02e24bf4cc3820e25f0ea0ab3d446bc18306ae7fae15",
+  "hash": "df0fba6a0a046c6cfc5580b6666ade5aa68a7ee55a33035305718c2ed748c3b9",
   "vendetta": {
     "icon": "ic_message"
   }
