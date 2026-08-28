@@ -1,0 +1,13 @@
+{
+  "name": "SDM Bulk Alerts",
+  "description": "Bulk server-member alert command for Kettu/Vendetta. Sends one DM to selected members of the current server with validation and rate limiting.",
+  "authors": [
+    {
+      "name": "Don"
+    }
+  ],
+  "main": "index.js",
+  "vendetta": {
+    "icon": "ic_message"
+  }
+}
