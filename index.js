@@ -71,18 +71,13 @@
             metro.findByProps("getChannel", "getDMFromUserId");
 
         const ChannelActionCreators =
-            metro.findByProps("openPrivateChannel", "ensurePrivateChannel") ||
-            metro.findByProps("ensurePrivateChannel") ||
             metro.findByProps("openPrivateChannel");
 
         if (!Dispatcher?.dispatch) throw new Error("Could not find Flux dispatcher.");
         if (!UserStore?.getUser) throw new Error("Could not find UserStore.");
         if (!ChannelStore?.getDMFromUserId) throw new Error("Could not find ChannelStore.");
-        if (
-            !ChannelActionCreators?.ensurePrivateChannel &&
-            !ChannelActionCreators?.openPrivateChannel
-        ) {
-            throw new Error("Could not find Discord private-channel action.");
+        if (!ChannelActionCreators?.openPrivateChannel) {
+            throw new Error("Could not find Discord openPrivateChannel action.");
         }
 
         return {
@@ -265,77 +260,15 @@
         return null;
     }
 
-    async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId) {
+    async function openRealDm(ChannelActionCreators, ChannelStore, userId) {
+        // If the DM already exists, don't make another request.
         const existing = getDmChannelId(ChannelStore, userId);
         if (existing) return existing;
 
-        const currentUserId = (() => {
-            try { return UserStore.getCurrentUser()?.id ?? null; } catch { return null; }
-        })();
-
-        // Preferred path: ensure/create the DM without selecting/navigating to it.
-        if (ChannelActionCreators?.ensurePrivateChannel) {
-            let result;
-
-            try {
-                // Older/current Discord client builds commonly use
-                // ensurePrivateChannel(currentUserId, recipientId).
-                if (currentUserId) {
-                    result = ChannelActionCreators.ensurePrivateChannel(
-                        currentUserId,
-                        userId
-                    );
-                } else {
-                    result = ChannelActionCreators.ensurePrivateChannel(userId);
-                }
-            } catch (firstError) {
-                // Some builds use an object argument instead.
-                try {
-                    result = ChannelActionCreators.ensurePrivateChannel({
-                        recipientIds: [userId]
-                    });
-                } catch {
-                    throw firstError;
-                }
-            }
-
-            if (result && typeof result.then === "function") {
-                try {
-                    const resolved = await result;
-                    const directId =
-                        typeof resolved === "string" ? resolved :
-                        resolved?.id ??
-                        resolved?.channel?.id ??
-                        resolved?.channelId;
-
-                    if (directId) return String(directId);
-                } catch (err) {
-                    throw new Error(
-                        `Discord could not ensure DM: ${err?.message || String(err)}`
-                    );
-                }
-            } else {
-                const directId =
-                    typeof result === "string" ? result :
-                    result?.id ??
-                    result?.channel?.id ??
-                    result?.channelId;
-
-                if (directId) return String(directId);
-            }
-
-            const ensuredId = await waitForDmChannel(ChannelStore, userId, 5000);
-            if (ensuredId) return ensuredId;
-        }
-
-        // Fallback only: some Kettu/Discord builds may expose openPrivateChannel
-        // but not ensurePrivateChannel. This can select the DM visually.
-        if (!ChannelActionCreators?.openPrivateChannel) {
-            throw new Error("No usable private-channel opener exists.");
-        }
-
         let result;
 
+        // Current Discord builds use an object with recipientIds.
+        // Keep a fallback for older Vendetta/Revenge builds.
         try {
             result = ChannelActionCreators.openPrivateChannel({
                 recipientIds: [userId]
@@ -348,24 +281,21 @@
             }
         }
 
+        // Some builds return a Promise / thenable, others only dispatch actions.
         if (result && typeof result.then === "function") {
             try {
                 const resolved = await result;
                 const directId =
-                    typeof resolved === "string" ? resolved :
                     resolved?.id ??
                     resolved?.channel?.id ??
                     resolved?.channelId;
 
                 if (directId) return String(directId);
             } catch (err) {
-                throw new Error(
-                    `Discord could not open DM: ${err?.message || String(err)}`
-                );
+                throw new Error(`Discord could not open DM: ${err?.message || String(err)}`);
             }
         } else {
             const directId =
-                typeof result === "string" ? result :
                 result?.id ??
                 result?.channel?.id ??
                 result?.channelId;
@@ -373,6 +303,7 @@
             if (directId) return String(directId);
         }
 
+        // The store is the source of truth. Give Discord time to create/cache it.
         const channelId = await waitForDmChannel(ChannelStore, userId, 5000);
         if (!channelId) {
             throw new Error("DM channel did not appear in ChannelStore.");
@@ -588,8 +519,8 @@
             let failed = 0;
 
             // Conservative pacing for stability and normal API usage.
-            const OPEN_SETTLE_MS = 1500;
-            const BETWEEN_TARGETS_MS = 3000;
+            const OPEN_SETTLE_MS = 1200;
+            const BETWEEN_TARGETS_MS = 2500;
 
             for (let i = 0; i < ids.length; i++) {
                 const userId = ids[i];
@@ -604,7 +535,6 @@
                     const channelId = await openRealDm(
                         ChannelActionCreators,
                         ChannelStore,
-                        UserStore,
                         userId
                     );
 
@@ -652,7 +582,7 @@
             toast(
                 `SDM Bulk: ${injected}/${ids.length} injected • ${opened} opened` +
                 (failed ? ` • ${failed} failed` : "") +
-                ` • silent stable pacing`
+                ` • stable pacing`
             );
         } catch (err) {
             try { vendetta?.logger?.error?.(`[${PLUGIN_NAME}]`, err); } catch {}
