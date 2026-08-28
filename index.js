@@ -8,8 +8,6 @@
     let unregisterClearRoleSwap = null;
     let unpatchCosmeticSend = null;
     let unpatchRoleReadLayer = null;
-    let unpatchProfileIdentitySwap = null;
-    let identitySwapSuspended = false;
 
     const storage = (() => {
         try {
@@ -527,93 +525,6 @@
     }
 
 
-
-    function snapshotUserVisual(user) {
-        if (!user) return null;
-        const keys = [
-            "username","globalName","global_name","discriminator","avatar",
-            "avatarDecorationData","avatar_decoration_data","banner",
-            "accentColor","accent_color","bot","system","publicFlags",
-            "public_flags","flags","primaryGuild","primary_guild",
-            "collectibles","displayNameStyles","display_name_styles"
-        ];
-        const out = {};
-        for (const key of keys) {
-            if (user[key] !== undefined) out[key] = user[key];
-        }
-        return out;
-    }
-
-    function cloneUserWithVisual(baseUser, visual) {
-        if (!baseUser || !visual) return baseUser;
-        let clone;
-        try {
-            clone = Object.assign(Object.create(Object.getPrototypeOf(baseUser)), baseUser);
-        } catch {
-            clone = { ...baseUser };
-        }
-        for (const [key, value] of Object.entries(visual)) {
-            try { clone[key] = value; } catch {}
-        }
-        try { clone.id = baseUser.id; } catch {}
-        return clone;
-    }
-
-    function getSelectedGuildId() {
-        try {
-            const metro = vendetta?.metro;
-            const SelectedGuildStore =
-                metro?.findByProps?.("getGuildId", "getLastSelectedGuildId") ||
-                metro?.findByProps?.("getGuildId");
-            return String(SelectedGuildStore?.getGuildId?.() ?? "");
-        } catch {
-            return "";
-        }
-    }
-
-    function getSwapForSelectedGuild() {
-        if (identitySwapSuspended) return null;
-        const guildId = getSelectedGuildId();
-        if (!guildId) return null;
-        return storage.roleSwaps.find(
-            record =>
-                String(record?.guildId) === guildId &&
-                record?.myUserVisual &&
-                record?.targetUserVisual
-        ) ?? null;
-    }
-
-    function installProfileIdentitySwap() {
-        const metro = vendetta?.metro;
-        const patcher = vendetta?.patcher;
-        if (!metro?.findByProps || !patcher?.after) {
-            throw new Error("Kettu patcher API unavailable.");
-        }
-
-        const UserStore = metro.findByProps("getUser", "getCurrentUser");
-        if (!UserStore?.getUser) {
-            throw new Error("Could not find UserStore.");
-        }
-
-        return patcher.after("getUser", UserStore, (args, result) => {
-            if (!result || identitySwapSuspended) return result;
-
-            const requestedId = String(args?.[0] ?? result?.id ?? "");
-            const record = getSwapForSelectedGuild();
-            if (!record) return result;
-
-            if (requestedId === String(record.targetUserId)) {
-                return cloneUserWithVisual(result, record.myUserVisual);
-            }
-
-            if (requestedId === String(record.myUserId)) {
-                return cloneUserWithVisual(result, record.targetUserVisual);
-            }
-
-            return result;
-        });
-    }
-
     function getActiveRoleSwap(guildId, userId) {
         if (!guildId || !userId) return null;
         return storage.roleSwaps.find(
@@ -1036,48 +947,24 @@
         try {
             const { Dispatcher, UserStore, GuildMemberStore, GuildRoleStore } = roleModules();
 
-            let me;
-            let targetUser;
-            let myMember;
-            let targetMember;
-
-            identitySwapSuspended = true;
-            try {
-                me = UserStore.getUser(myUserId);
-                targetUser = UserStore.getUser(targetUserId);
-                myMember = getMember(GuildMemberStore, guildId, myUserId);
-                targetMember = getMember(GuildMemberStore, guildId, targetUserId);
-            } finally {
-                identitySwapSuspended = false;
-            }
+            const me = UserStore.getUser(myUserId);
+            const myMember = getMember(GuildMemberStore, guildId, myUserId);
+            const targetMember = getMember(GuildMemberStore, guildId, targetUserId);
 
             if (!me) throw new Error("Your user is not cached.");
-            if (!targetUser) throw new Error("Target user is not cached.");
             if (!myMember) throw new Error("Your server member profile is not cached.");
             if (!targetMember) throw new Error("Target member is not cached in that server.");
 
-            const existingSwap = storage.roleSwaps.find(
-                x =>
-                    String(x?.guildId) === guildId &&
-                    String(x?.myUserId) === myUserId
-            );
-
-            const original = existingSwap?.original ?? {
+            const original = {
                 roles: Array.isArray(myMember.roles) ? [...myMember.roles] : [],
                 nick: myMember.nick ?? null,
                 avatar: myMember.avatar ?? null,
                 communication_disabled_until: myMember.communication_disabled_until ?? null,
                 premium_since: myMember.premium_since ?? null,
                 pending: Boolean(myMember.pending),
-                joined_at: myMember.joined_at ?? myMember.joinedAt ?? null,
+                joined_at: myMember.joined_at ?? null,
                 flags: myMember.flags ?? 0
             };
-
-            const myUserVisual =
-                existingSwap?.myUserVisual ??
-                snapshotUserVisual(me);
-
-            const targetUserVisual = snapshotUserVisual(targetUser);
 
             const rolePresentation = getTargetRolePresentation(
                 GuildRoleStore,
@@ -1131,12 +1018,10 @@
                 myUserId,
                 targetUserId,
                 original,
-                spoofed,
-                myUserVisual,
-                targetUserVisual
+                spoofed
             });
 
-            toast("Profile Swap active: your identity now uses the target profile and hierarchy slot locally.");
+            toast(`Role Swap: ${spoofed.roles.length} role${spoofed.roles.length === 1 ? "" : "s"} locked locally + hierarchy refreshed.`);
         } catch (err) {
             try { vendetta?.logger?.error?.(`[${PLUGIN_NAME}] role-swap`, err); } catch {}
             toast(`Role Swap error: ${err?.message || String(err)}`);
@@ -1354,18 +1239,6 @@
     return {
         onLoad() {
             try {
-                unpatchProfileIdentitySwap = installProfileIdentitySwap();
-            } catch (err) {
-                try {
-                    vendetta?.logger?.error?.(
-                        `[${PLUGIN_NAME}] profile-identity-swap-install`,
-                        err
-                    );
-                } catch {}
-            }
-
-
-            try {
                 unpatchRoleReadLayer = installRoleReadLayer();
             } catch (err) {
                 try {
@@ -1511,14 +1384,6 @@
         },
 
         onUnload() {
-            try {
-                if (typeof unpatchProfileIdentitySwap === "function") {
-                    unpatchProfileIdentitySwap();
-                }
-            } catch {}
-            unpatchProfileIdentitySwap = null;
-
-
             try {
                 if (typeof unpatchRoleReadLayer === "function") {
                     unpatchRoleReadLayer();
