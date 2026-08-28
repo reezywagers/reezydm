@@ -1,13 +1,13 @@
 {
-  "name": "Kettu SDM Role Fix v8",
-  "description": "Combined toolkit with persistent local role reads plus copied role colour and hoist metadata for profile and member-list hierarchy.",
+  "name": "Kettu SDM Role Fix v8.1",
+  "description": "Fixed v8 build with persistent local role reads, role colour/hoist metadata, hierarchy refresh, and no startup toast.",
   "authors": [
     {
       "name": "reezywagers"
     }
   ],
   "main": "index.js",
-  "hash": "d1e019f743ab4d3a44148d5e9f36a872c2dfb320e517ce932673b5621294aa47",
+  "hash": "3ead5e0e18382b93962667449e9e710d052b7256bc378178592403ffacce2d32",
   "vendetta": {
     "icon": "ic_message"
   }
