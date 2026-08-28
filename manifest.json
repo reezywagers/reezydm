@@ -1,13 +1,13 @@
 {
   "name": "Reezy Mass DM",
-  "description": "Local-only fake incoming DMs with mutual profile resolution and Stable v2 DM opening.",
+  "description": "Stable v2 visible DM opening with real/mutual profile resolution.",
   "authors": [
     {
       "name": "reezywagers"
     }
   ],
   "main": "index.js",
-  "hash": "952cf65f869efe360d910527fdd4132bfb8747db00a9191047b7089df1b89cb9",
+  "hash": "bb69b7d346e26a1db2c619a19d643e229874b07ce8ada156b233f7b0566e6170",
   "vendetta": {
     "icon": "ic_message"
   }
