@@ -71,20 +71,28 @@
             metro.findByProps("getChannel", "getDMFromUserId");
 
         const ChannelActionCreators =
+            metro.findByProps("ensurePrivateChannel", "openPrivateChannel") ||
+            metro.findByProps("ensurePrivateChannel") ||
             metro.findByProps("openPrivateChannel");
+
+        const GuildMemberStore =
+            metro.findByProps("getMember", "getMembers") ||
+            metro.findByProps("getMember");
 
         if (!Dispatcher?.dispatch) throw new Error("Could not find Flux dispatcher.");
         if (!UserStore?.getUser) throw new Error("Could not find UserStore.");
         if (!ChannelStore?.getDMFromUserId) throw new Error("Could not find ChannelStore.");
-        if (!ChannelActionCreators?.openPrivateChannel) {
-            throw new Error("Could not find Discord openPrivateChannel action.");
+        if (!ChannelActionCreators?.ensurePrivateChannel &&
+            !ChannelActionCreators?.openPrivateChannel) {
+            throw new Error("Could not find Discord private-channel action.");
         }
 
         return {
             Dispatcher,
             UserStore,
             ChannelStore,
-            ChannelActionCreators
+            ChannelActionCreators,
+            GuildMemberStore
         };
     }
 
@@ -94,6 +102,65 @@
         const ms = BigInt(Math.floor(safeMs));
         const rand = BigInt(Math.floor(Math.random() * 4194303));
         return String(((ms - EPOCH) << 22n) | rand);
+    }
+
+
+    function resolveUserFromMutuals(UserStore, GuildMemberStore, userId) {
+        try {
+            const direct = UserStore?.getUser?.(userId);
+            if (direct) return direct;
+        } catch {}
+
+        if (!GuildMemberStore) return null;
+
+        // Try getMembers() across all cached guilds. Discord/Kettu builds use
+        // slightly different shapes, so handle arrays and keyed objects.
+        try {
+            const all = GuildMemberStore.getMembers?.();
+
+            if (all && typeof all === "object") {
+                for (const key of Object.keys(all)) {
+                    const members = all[key];
+                    if (!members) continue;
+
+                    let member = null;
+
+                    if (Array.isArray(members)) {
+                        member = members.find(m =>
+                            String(
+                                m?.user?.id ??
+                                m?.userId ??
+                                m?.id ??
+                                ""
+                            ) === String(userId)
+                        );
+                    } else if (typeof members === "object") {
+                        member = members[userId] ?? null;
+
+                        if (!member) {
+                            for (const value of Object.values(members)) {
+                                if (
+                                    String(
+                                        value?.user?.id ??
+                                        value?.userId ??
+                                        value?.id ??
+                                        ""
+                                    ) === String(userId)
+                                ) {
+                                    member = value;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    const user = member?.user ?? member?.userObject ?? null;
+                    if (user?.id) return user;
+                }
+            }
+        } catch {}
+
+        return null;
     }
 
     function fallbackUser(id) {
@@ -267,17 +334,37 @@
 
         let result;
 
-        // Current Discord builds use an object with recipientIds.
-        // Keep a fallback for older Vendetta/Revenge builds.
-        try {
-            result = ChannelActionCreators.openPrivateChannel({
-                recipientIds: [userId]
-            });
-        } catch (firstError) {
+        // Prefer ensurePrivateChannel because it loads/creates the DM without
+        // intentionally navigating the UI into that conversation.
+        if (ChannelActionCreators?.ensurePrivateChannel) {
             try {
-                result = ChannelActionCreators.openPrivateChannel(userId);
-            } catch {
-                throw firstError;
+                const currentUserId = UserStore?.getCurrentUser?.()?.id;
+                if (!currentUserId) throw new Error("Current user is unavailable.");
+                result = ChannelActionCreators.ensurePrivateChannel(
+                    currentUserId,
+                    userId
+                );
+            } catch (firstError) {
+                try {
+                    result = ChannelActionCreators.ensurePrivateChannel({
+                        recipientIds: [userId]
+                    });
+                } catch {
+                    throw firstError;
+                }
+            }
+        } else {
+            // Compatibility fallback for builds exposing only openPrivateChannel.
+            try {
+                result = ChannelActionCreators.openPrivateChannel({
+                    recipientIds: [userId]
+                });
+            } catch (firstError) {
+                try {
+                    result = ChannelActionCreators.openPrivateChannel(userId);
+                } catch {
+                    throw firstError;
+                }
             }
         }
 
@@ -511,7 +598,8 @@
                 Dispatcher,
                 UserStore,
                 ChannelStore,
-                ChannelActionCreators
+                ChannelActionCreators,
+                GuildMemberStore
             } = modules();
 
             let injected = 0;
@@ -526,9 +614,17 @@
                 const userId = ids[i];
 
                 try {
-                    let user = null;
-                    try { user = UserStore.getUser(userId); } catch {}
-                    if (!user) user = fallbackUser(userId);
+                    const user = resolveUserFromMutuals(
+                        UserStore,
+                        GuildMemberStore,
+                        userId
+                    );
+
+                    if (!user) {
+                        throw new Error(
+                            `Could not resolve ${userId} from cached profile or mutual-server member data. View their profile once and retry.`
+                        );
+                    }
 
                     const existedBefore = Boolean(getDmChannelId(ChannelStore, userId));
 
