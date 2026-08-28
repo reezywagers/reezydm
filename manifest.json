@@ -1,13 +1,13 @@
 {
-  "name": "Kettu SDM Toolkit Stable",
-  "description": "Stable local-only toolkit using Discord's real DM opener with conservative sequential pacing.",
+  "name": "Kettu SDM Cosmetic Chat v6",
+  "description": "Stable local-only toolkit with silent bulk fake DMs and automatic local-only channel messages while cosmetic role swap is active.",
   "authors": [
     {
       "name": "reezywagers"
     }
   ],
   "main": "index.js",
-  "hash": "ad546be84b56dc05554b02e24bf4cc3820e25f0ea0ab3d446bc18306ae7fae15",
+  "hash": "db4ae9016c27684ae05577142b254e9edc85f363ad506c4ea916fa93cd3d97f3",
   "vendetta": {
     "icon": "ic_message"
   }
