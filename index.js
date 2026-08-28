@@ -67,17 +67,25 @@
         const Dispatcher = metro.findByProps("dispatch", "subscribe");
         const UserStore = metro.findByProps("getUser", "getCurrentUser");
         const ChannelStore =
-            metro.findByProps("getMutablePrivateChannels", "getDMFromUserId") ||
+            metro.findByProps("getDMChannelFromUserId", "getDMFromUserId") ||
             metro.findByProps("getChannel", "getDMFromUserId");
 
-        const PrivateChannelSortStore =
-            metro.findByProps("getPrivateChannelIds", "getSortedChannels");
+        const ChannelActionCreators =
+            metro.findByProps("openPrivateChannel");
 
         if (!Dispatcher?.dispatch) throw new Error("Could not find Flux dispatcher.");
         if (!UserStore?.getUser) throw new Error("Could not find UserStore.");
         if (!ChannelStore?.getDMFromUserId) throw new Error("Could not find ChannelStore.");
+        if (!ChannelActionCreators?.openPrivateChannel) {
+            throw new Error("Could not find Discord openPrivateChannel action.");
+        }
 
-        return { Dispatcher, UserStore, ChannelStore, PrivateChannelSortStore };
+        return {
+            Dispatcher,
+            UserStore,
+            ChannelStore,
+            ChannelActionCreators
+        };
     }
 
     function fakeSnowflakeFromTimestamp(timestampMs, offset = 0) {
@@ -219,6 +227,90 @@
         else storage.spoofDMs.push(record);
     }
 
+
+
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    function getDmChannelId(ChannelStore, userId) {
+        try {
+            const id = ChannelStore.getDMFromUserId(userId);
+            if (typeof id === "string") return id;
+            if (id?.id) return id.id;
+        } catch {}
+
+        try {
+            const channel = ChannelStore.getDMChannelFromUserId?.(userId);
+            if (channel?.id) return channel.id;
+        } catch {}
+
+        return null;
+    }
+
+    async function waitForDmChannel(ChannelStore, userId, timeoutMs = 5000) {
+        const started = Date.now();
+
+        while (Date.now() - started < timeoutMs) {
+            const id = getDmChannelId(ChannelStore, userId);
+            if (id) return id;
+            await sleep(100);
+        }
+
+        return null;
+    }
+
+    async function openRealDm(ChannelActionCreators, ChannelStore, userId) {
+        // If the DM already exists, don't make another request.
+        const existing = getDmChannelId(ChannelStore, userId);
+        if (existing) return existing;
+
+        let result;
+
+        // Current Discord builds use an object with recipientIds.
+        // Keep a fallback for older Vendetta/Revenge builds.
+        try {
+            result = ChannelActionCreators.openPrivateChannel({
+                recipientIds: [userId]
+            });
+        } catch (firstError) {
+            try {
+                result = ChannelActionCreators.openPrivateChannel(userId);
+            } catch {
+                throw firstError;
+            }
+        }
+
+        // Some builds return a Promise / thenable, others only dispatch actions.
+        if (result && typeof result.then === "function") {
+            try {
+                const resolved = await result;
+                const directId =
+                    resolved?.id ??
+                    resolved?.channel?.id ??
+                    resolved?.channelId;
+
+                if (directId) return String(directId);
+            } catch (err) {
+                throw new Error(`Discord could not open DM: ${err?.message || String(err)}`);
+            }
+        } else {
+            const directId =
+                result?.id ??
+                result?.channel?.id ??
+                result?.channelId;
+
+            if (directId) return String(directId);
+        }
+
+        // The store is the source of truth. Give Discord time to create/cache it.
+        const channelId = await waitForDmChannel(ChannelStore, userId, 5000);
+        if (!channelId) {
+            throw new Error("DM channel did not appear in ChannelStore.");
+        }
+
+        return channelId;
+    }
 
     function roleModules() {
         const metro = vendetta?.metro;
@@ -405,8 +497,9 @@
             return;
         }
 
-        if (ids.length > MAX_TARGETS) {
-            toast(`SDM Bulk: max ${MAX_TARGETS} IDs per run.`);
+        const SAFE_MAX_TARGETS = 50;
+        if (ids.length > SAFE_MAX_TARGETS) {
+            toast(`SDM Bulk: max ${SAFE_MAX_TARGETS} IDs per run in stable mode.`);
             return;
         }
 
@@ -414,59 +507,82 @@
             const baseTimestamp = parseTimestamp(dateInput, timeInput);
             const baseMs = baseTimestamp.getTime();
 
-            const { Dispatcher, UserStore, ChannelStore } = modules();
+            const {
+                Dispatcher,
+                UserStore,
+                ChannelStore,
+                ChannelActionCreators
+            } = modules();
+
             let injected = 0;
-            let privateStoreInserted = 0;
+            let opened = 0;
+            let failed = 0;
+
+            // Conservative pacing for stability and normal API usage.
+            const OPEN_SETTLE_MS = 1200;
+            const BETWEEN_TARGETS_MS = 2500;
 
             for (let i = 0; i < ids.length; i++) {
                 const userId = ids[i];
 
-                let user = null;
-                try { user = UserStore.getUser(userId); } catch {}
-                if (!user) user = fallbackUser(userId);
-
-                let channelId = null;
                 try {
-                    const existingDm = ChannelStore.getDMFromUserId(userId);
-                    channelId =
-                        typeof existingDm === "string"
-                            ? existingDm
-                            : existingDm?.id ?? null;
-                } catch {}
+                    let user = null;
+                    try { user = UserStore.getUser(userId); } catch {}
+                    if (!user) user = fallbackUser(userId);
 
-                const previous = storage.spoofDMs.find(x => x.userId === userId);
+                    const existedBefore = Boolean(getDmChannelId(ChannelStore, userId));
 
-                if (!channelId) {
-                    channelId =
-                        previous?.channelId ||
-                        fakeSnowflakeFromTimestamp(Date.now(), i);
+                    const channelId = await openRealDm(
+                        ChannelActionCreators,
+                        ChannelStore,
+                        userId
+                    );
+
+                    if (!existedBefore) {
+                        opened++;
+                        await sleep(OPEN_SETTLE_MS);
+                    } else {
+                        await sleep(350);
+                    }
+
+                    const messageId = fakeSnowflakeFromTimestamp(baseMs, i);
+                    const timestamp = new Date(baseMs + i).toISOString();
+
+                    const record = {
+                        userId,
+                        user,
+                        channelId,
+                        messageId,
+                        content: script,
+                        timestamp,
+                        realDm: true
+                    };
+
+                    if (!dispatchFakeIncoming(Dispatcher, record)) {
+                        throw new Error("MESSAGE_CREATE dispatch failed.");
+                    }
+
+                    saveRecord(record);
+                    injected++;
+                } catch (err) {
+                    failed++;
+                    try {
+                        vendetta?.logger?.error?.(
+                            `[${PLUGIN_NAME}] target ${userId}`,
+                            err
+                        );
+                    } catch {}
                 }
 
-                // Small millisecond offset keeps IDs unique while preserving
-                // the same visible selected timestamp for all messages.
-                const messageId = fakeSnowflakeFromTimestamp(baseMs, i);
-                const timestamp = new Date(baseMs + i).toISOString();
-
-                const record = {
-                    userId,
-                    user,
-                    channelId,
-                    messageId,
-                    content: script,
-                    timestamp
-                };
-
-                if (createLocalDm(Dispatcher, ChannelStore, user, channelId, messageId)) {
-                    privateStoreInserted++;
+                if (i < ids.length - 1) {
+                    await sleep(BETWEEN_TARGETS_MS);
                 }
-                dispatchFakeIncoming(Dispatcher, record);
-                saveRecord(record);
-                injected++;
             }
 
-            const shown = baseTimestamp.toLocaleString();
             toast(
-                `SDM Bulk: ${injected} fake DM${injected === 1 ? "" : "s"} injected • private store ${privateStoreInserted}/${injected} • ${shown}`
+                `SDM Bulk: ${injected}/${ids.length} injected • ${opened} opened` +
+                (failed ? ` • ${failed} failed` : "") +
+                ` • stable pacing`
             );
         } catch (err) {
             try { vendetta?.logger?.error?.(`[${PLUGIN_NAME}]`, err); } catch {}
@@ -500,18 +616,9 @@
                         id: record.messageId
                     });
                 } catch {}
-
-                try {
-                    Dispatcher.dispatch({
-                        type: "CHANNEL_DELETE",
-                        channel: { id: record.channelId },
-                        channelId: record.channelId,
-                        id: record.channelId
-                    });
-                } catch {}
             }
 
-            toast(`Clear DM: removed ${toClear.length} spoofed DM${toClear.length === 1 ? "" : "s"}.`);
+            toast(`Clear DM: removed ${toClear.length} local fake message${toClear.length === 1 ? "" : "s"}.`);
         } catch (err) {
             try { vendetta?.logger?.error?.(`[${PLUGIN_NAME}] clear`, err); } catch {}
             toast(`Clear DM error: ${err?.message || String(err)}`);
@@ -519,7 +626,7 @@
     }
 
     function restorePersistentDMs() {
-        // Crash-safe: don't replay synthetic Discord events during startup.
+        // Stable build: no synthetic message replay while Kettu is starting.
         return;
     }
 
@@ -528,8 +635,8 @@
             unregisterBulk = vendetta.commands.registerCommand({
                 name: "sdm-bulk",
                 displayName: "sdm-bulk",
-                description: "Send preset script to multiple users",
-                displayDescription: "Send preset script to multiple users",
+                description: "Open DMs and inject a local preset script for multiple users",
+                displayDescription: "Open DMs and inject a local preset script for multiple users",
                 options: [
                     {
                         name: "targets",
@@ -645,7 +752,6 @@
                 execute: clearRoleSwapExecute
             });
 
-            restorePersistentDMs();
             toast("SDM Bulk enabled.");
         },
 
