@@ -71,8 +71,6 @@
             metro.findByProps("getChannel", "getDMFromUserId");
 
         const ChannelActionCreators =
-            metro.findByProps("ensurePrivateChannel", "openPrivateChannel") ||
-            metro.findByProps("ensurePrivateChannel") ||
             metro.findByProps("openPrivateChannel");
 
         const GuildMemberStore =
@@ -82,9 +80,8 @@
         if (!Dispatcher?.dispatch) throw new Error("Could not find Flux dispatcher.");
         if (!UserStore?.getUser) throw new Error("Could not find UserStore.");
         if (!ChannelStore?.getDMFromUserId) throw new Error("Could not find ChannelStore.");
-        if (!ChannelActionCreators?.ensurePrivateChannel &&
-            !ChannelActionCreators?.openPrivateChannel) {
-            throw new Error("Could not find Discord private-channel action.");
+        if (!ChannelActionCreators?.openPrivateChannel) {
+            throw new Error("Could not find Discord openPrivateChannel action.");
         }
 
         return {
@@ -334,37 +331,18 @@
 
         let result;
 
-        // Prefer ensurePrivateChannel because it loads/creates the DM without
-        // intentionally navigating the UI into that conversation.
-        if (ChannelActionCreators?.ensurePrivateChannel) {
+        // Use Stable v2's working DM-opening action.
+        // This may navigate/open the DM in Kettu, but it reliably creates/loads
+        // the thread before the local fake incoming message is injected.
+        try {
+            result = ChannelActionCreators.openPrivateChannel({
+                recipientIds: [userId]
+            });
+        } catch (firstError) {
             try {
-                const currentUserId = UserStore?.getCurrentUser?.()?.id;
-                if (!currentUserId) throw new Error("Current user is unavailable.");
-                result = ChannelActionCreators.ensurePrivateChannel(
-                    currentUserId,
-                    userId
-                );
-            } catch (firstError) {
-                try {
-                    result = ChannelActionCreators.ensurePrivateChannel({
-                        recipientIds: [userId]
-                    });
-                } catch {
-                    throw firstError;
-                }
-            }
-        } else {
-            // Compatibility fallback for builds exposing only openPrivateChannel.
-            try {
-                result = ChannelActionCreators.openPrivateChannel({
-                    recipientIds: [userId]
-                });
-            } catch (firstError) {
-                try {
-                    result = ChannelActionCreators.openPrivateChannel(userId);
-                } catch {
-                    throw firstError;
-                }
+                result = ChannelActionCreators.openPrivateChannel(userId);
+            } catch {
+                throw firstError;
             }
         }
 
