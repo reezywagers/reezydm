@@ -1,13 +1,13 @@
 {
-  "name": "Kettu SDM Profile Swap v9",
-  "description": "Local profile identity swap using the target member real guild profile and hierarchy slot.",
+  "name": "Kettu SDM Role Fix v9.1 Crash-Safe",
+  "description": "Crash-safe rollback to the persistent local role/profile spoof layer. Removes the broad UserStore identity swap that caused Kettu crashes.",
   "authors": [
     {
       "name": "reezywagers"
     }
   ],
   "main": "index.js",
-  "hash": "1033f9249c2611902c1532239803fb59df22555736613c7fc2415a185fea9e53",
+  "hash": "3ead5e0e18382b93962667449e9e710d052b7256bc378178592403ffacce2d32",
   "vendetta": {
     "icon": "ic_message"
   }
