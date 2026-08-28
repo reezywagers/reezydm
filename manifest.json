@@ -1,13 +1,13 @@
 {
-  "name": "Kettu SDM Toolkit",
-  "description": "Crash-safe all-in-one local Kettu toolkit.",
+  "name": "Kettu SDM Toolkit Stable",
+  "description": "Stable local-only toolkit using Discord's real DM opener with conservative sequential pacing.",
   "authors": [
     {
       "name": "reezywagers"
     }
   ],
   "main": "index.js",
-  "hash": "89438bfd30b532955f8bd8ab40c3e27e297b7b66e0ab237c3cccec35e36e0c4b",
+  "hash": "ad546be84b56dc05554b02e24bf4cc3820e25f0ea0ab3d446bc18306ae7fae15",
   "vendetta": {
     "icon": "ic_message"
   }
