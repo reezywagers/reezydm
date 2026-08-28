@@ -1,9 +1,9 @@
 {
-  "name": "SDM Bulk Alerts",
-  "description": "Bulk server-member alert command for Kettu/Vendetta. Sends one DM to selected members of the current server with validation and rate limiting.",
+  "name": "Spoof Bulk",
+  "description": "Local-only bulk message spoofer for Kettu. Injects fake incoming messages from selected users into the current channel.",
   "authors": [
     {
-      "name": "Don"
+      "name": "reezywagers"
     }
   ],
   "main": "index.js",
