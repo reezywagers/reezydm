@@ -1,13 +1,13 @@
 {
-  "name": "Kettu SDM Role Fix v8.1",
-  "description": "Fixed v8 build with persistent local role reads, role colour/hoist metadata, hierarchy refresh, and no startup toast.",
+  "name": "Kettu SDM Profile Swap v9",
+  "description": "Local profile identity swap using the target member real guild profile and hierarchy slot.",
   "authors": [
     {
       "name": "reezywagers"
     }
   ],
   "main": "index.js",
-  "hash": "3ead5e0e18382b93962667449e9e710d052b7256bc378178592403ffacce2d32",
+  "hash": "1033f9249c2611902c1532239803fb59df22555736613c7fc2415a185fea9e53",
   "vendetta": {
     "icon": "ic_message"
   }
