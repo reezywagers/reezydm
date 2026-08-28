@@ -1,13 +1,13 @@
 {
-  "name": "Spoof Bulk",
-  "description": "Local-only bulk message spoofer for Kettu. Injects fake incoming messages from selected users into the current channel.",
+  "name": "Kettu SDM Toolkit",
+  "description": "All-in-one local-only Kettu toolkit: persistent bulk fake DMs, custom timestamps, clear-DM controls, and local server-role profile spoofing.",
   "authors": [
     {
       "name": "reezywagers"
     }
   ],
   "main": "index.js",
-  "hash": "8e7eb2ce7d9eb5caf93c556aa201688c045db40480b7b7996172885f4714404b",
+  "hash": "13b87e8c84bce13531ccf542c024b4b0ff7800f0405b160a5f3d76db8ad8b31e",
   "vendetta": {
     "icon": "ic_message"
   }
