@@ -6,8 +6,6 @@
     let unregisterClear = null;
     let unregisterRoleSwap = null;
     let unregisterClearRoleSwap = null;
-    let unpatchCosmeticSend = null;
-    let unpatchRoleReadLayer = null;
 
     const storage = (() => {
         try {
@@ -236,53 +234,6 @@
 
 
 
-
-    function formatError(err) {
-        try {
-            if (err == null) return "unknown failure";
-            if (typeof err === "string") return err;
-
-            const parts = [];
-
-            if (err?.name) parts.push(`name=${err.name}`);
-            if (err?.message) parts.push(`message=${err.message}`);
-            if (err?.code !== undefined) parts.push(`code=${err.code}`);
-            if (err?.status !== undefined) parts.push(`status=${err.status}`);
-
-            const response =
-                err?.response ??
-                err?.body ??
-                err?.data ??
-                err?.raw ??
-                null;
-
-            if (response !== null && response !== undefined) {
-                try {
-                    parts.push(
-                        `response=${
-                            typeof response === "string"
-                                ? response
-                                : JSON.stringify(response)
-                        }`
-                    );
-                } catch {}
-            }
-
-            if (!parts.length) {
-                try {
-                    return JSON.stringify(err);
-                } catch {
-                    return String(err);
-                }
-            }
-
-            return parts.join(" | ");
-        } catch {
-            try { return String(err); } catch {}
-            return "unknown failure";
-        }
-    }
-
     function sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
@@ -314,18 +265,7 @@
         return null;
     }
 
-    
-    function stageError(stage, err) {
-        const detail = formatError(err);
-        const wrapped = new Error(`${stage}: ${detail}`);
-        try {
-            wrapped.stage = stage;
-            wrapped.original = err;
-        } catch {}
-        return wrapped;
-    }
-
-async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId) {
+    async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId) {
         const existing = getDmChannelId(ChannelStore, userId);
         if (existing) return existing;
 
@@ -441,343 +381,6 @@ async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId
         return channelId;
     }
 
-
-    function getGuildIdFromChannel(ChannelStore, channelId) {
-        try {
-            const channel = ChannelStore.getChannel?.(channelId);
-            return channel?.guild_id ?? channel?.guildId ?? null;
-        } catch {
-            return null;
-        }
-    }
-
-    function isCosmeticChatActiveForGuild(guildId) {
-        if (!guildId) return false;
-        return storage.roleSwaps.some(record => record?.guildId === guildId);
-    }
-
-    function dispatchOwnLocalMessage(Dispatcher, UserStore, channelId, content) {
-        const me = UserStore.getCurrentUser?.();
-        if (!me) throw new Error("Current user unavailable.");
-
-        const now = Date.now();
-        const id = fakeSnowflakeFromTimestamp(
-            now,
-            Math.floor(Math.random() * 1000)
-        );
-
-        Dispatcher.dispatch({
-            type: "MESSAGE_CREATE",
-            message: {
-                id,
-                type: 0,
-                channel_id: channelId,
-                author: me,
-                content: String(content ?? ""),
-                timestamp: new Date(now).toISOString(),
-                edited_timestamp: null,
-                tts: false,
-                mention_everyone: false,
-                mentions: [],
-                mention_roles: [],
-                mention_channels: [],
-                attachments: [],
-                embeds: [],
-                reactions: [],
-                pinned: false,
-                flags: 0,
-                components: [],
-                sticker_items: []
-            },
-            channelId,
-            optimistic: false
-        });
-
-        return id;
-    }
-
-    function installCosmeticSendInterceptor() {
-        const metro = vendetta?.metro;
-        const patcher = vendetta?.patcher;
-
-        if (!metro?.findByProps || !patcher?.instead) {
-            throw new Error("Kettu patcher API unavailable.");
-        }
-
-        const MessageActions =
-            metro.findByProps("sendMessage", "editMessage") ||
-            metro.findByProps("sendMessage");
-
-        const Dispatcher = metro.findByProps("dispatch", "subscribe");
-        const UserStore = metro.findByProps("getUser", "getCurrentUser");
-        const ChannelStore =
-            metro.findByProps("getChannel", "getDMFromUserId") ||
-            metro.findByProps("getChannel");
-
-        if (!MessageActions?.sendMessage) {
-            throw new Error("Could not find sendMessage.");
-        }
-
-        return patcher.instead(
-            "sendMessage",
-            MessageActions,
-            (args, original) => {
-                try {
-                    const channelId = String(args?.[0] ?? "");
-                    const guildId = getGuildIdFromChannel(
-                        ChannelStore,
-                        channelId
-                    );
-
-                    // Only intercept normal channel sends inside servers where
-                    // a local /role-swap is active. DMs and other servers send normally.
-                    if (!isCosmeticChatActiveForGuild(guildId)) {
-                        return original(...args);
-                    }
-
-                    const payload = args?.[1] ?? {};
-                    const content =
-                        typeof payload === "string"
-                            ? payload
-                            : payload?.content ?? "";
-
-                    if (!String(content).trim()) {
-                        toast("Cosmetic Chat: text only.");
-                        return Promise.resolve({
-                            local: true,
-                            blockedFromServer: true
-                        });
-                    }
-
-                    dispatchOwnLocalMessage(
-                        Dispatcher,
-                        UserStore,
-                        channelId,
-                        content
-                    );
-
-                    // Critical: never call original sendMessage in cosmetic mode.
-                    return Promise.resolve({
-                        local: true,
-                        blockedFromServer: true
-                    });
-                } catch (err) {
-                    try {
-                        vendetta?.logger?.error?.(
-                            `[${PLUGIN_NAME}] cosmetic-send`,
-                            err
-                        );
-                    } catch {}
-
-                    // Fail closed: an interceptor error must never leak the message
-                    // to Discord's real send path.
-                    toast("Cosmetic Chat error: message stayed local.");
-                    return Promise.resolve({
-                        local: true,
-                        blockedFromServer: true,
-                        error: true
-                    });
-                }
-            }
-        );
-    }
-
-
-    function getActiveRoleSwap(guildId, userId) {
-        if (!guildId || !userId) return null;
-        return storage.roleSwaps.find(
-            record =>
-                String(record?.guildId) === String(guildId) &&
-                String(record?.myUserId) === String(userId)
-        ) ?? null;
-    }
-
-    function mergeSpoofedMember(realMember, record) {
-        if (!record || !realMember) return realMember;
-
-        const spoofed = record.spoofed ?? {};
-        const joined =
-            spoofed.joined_at ??
-            spoofed.joinedAt ??
-            realMember.joined_at ??
-            realMember.joinedAt ??
-            null;
-
-        const colorRoleId =
-            spoofed.colorRoleId ??
-            spoofed.color_role_id ??
-            realMember.colorRoleId ??
-            realMember.color_role_id ??
-            null;
-
-        const hoistRoleId =
-            spoofed.hoistRoleId ??
-            spoofed.hoist_role_id ??
-            realMember.hoistRoleId ??
-            realMember.hoist_role_id ??
-            null;
-
-        return {
-            ...realMember,
-            roles: Array.isArray(spoofed.roles)
-                ? [...spoofed.roles]
-                : Array.isArray(realMember.roles)
-                    ? [...realMember.roles]
-                    : [],
-            joined_at: joined,
-            joinedAt: joined,
-
-            // Role presentation metadata used by different Discord/Kettu builds.
-            colorRoleId,
-            color_role_id: colorRoleId,
-            hoistRoleId,
-            hoist_role_id: hoistRoleId,
-            color: spoofed.color ?? realMember.color ?? 0,
-            colorString:
-                spoofed.colorString ??
-                spoofed.color_string ??
-                realMember.colorString ??
-                realMember.color_string ??
-                null,
-            color_string:
-                spoofed.colorString ??
-                spoofed.color_string ??
-                realMember.color_string ??
-                realMember.colorString ??
-                null
-        };
-    }
-
-    function installRoleReadLayer() {
-        const metro = vendetta?.metro;
-        const patcher = vendetta?.patcher;
-
-        if (!metro?.findByProps || !patcher?.after) {
-            throw new Error("Kettu patcher API unavailable.");
-        }
-
-        const GuildMemberStore =
-            metro.findByProps("getMember", "getMembers") ||
-            metro.findByProps("getMember");
-
-        const UserStore = metro.findByProps("getUser", "getCurrentUser");
-
-        if (!GuildMemberStore?.getMember) {
-            throw new Error("Could not find GuildMemberStore.");
-        }
-
-        const unpatches = [];
-
-        const addAfter = (name, callback) => {
-            try {
-                if (typeof GuildMemberStore?.[name] === "function") {
-                    const unpatch = patcher.after(
-                        name,
-                        GuildMemberStore,
-                        callback
-                    );
-                    if (typeof unpatch === "function") {
-                        unpatches.push(unpatch);
-                    }
-                }
-            } catch {}
-        };
-
-        // Most profile/member displays use this.
-        addAfter("getMember", (args, result) => {
-            const guildId = String(args?.[0] ?? "");
-            const userId = String(args?.[1] ?? "");
-            const record = getActiveRoleSwap(guildId, userId);
-            return mergeSpoofedMember(result, record);
-        });
-
-        // Some profile surfaces deliberately bypass getMember.
-        addAfter("getTrueMember", (args, result) => {
-            const guildId = String(args?.[0] ?? "");
-            const userId = String(args?.[1] ?? "");
-            const record = getActiveRoleSwap(guildId, userId);
-            return mergeSpoofedMember(result, record);
-        });
-
-        // Current-user profile surfaces can use dedicated self getters.
-        const patchSelfMember = (name) => {
-            addAfter(name, (args, result) => {
-                const guildId = String(args?.[0] ?? "");
-                let userId = "";
-                try {
-                    userId = String(UserStore?.getCurrentUser?.()?.id ?? "");
-                } catch {}
-                const record = getActiveRoleSwap(guildId, userId);
-                return mergeSpoofedMember(result, record);
-            });
-        };
-
-        patchSelfMember("getSelfMember");
-        patchSelfMember("getCachedSelfMember");
-
-        // Member list / hierarchy code can use the pending-role getter directly
-        // instead of reading member.roles.
-        addAfter("getMemberRoleWithPendingUpdates", (args, result) => {
-            const guildId = String(args?.[0] ?? "");
-            const userId = String(args?.[1] ?? "");
-            const record = getActiveRoleSwap(guildId, userId);
-
-            if (!record) return result;
-
-            return Array.isArray(record?.spoofed?.roles)
-                ? [...record.spoofed.roles]
-                : result;
-        });
-
-        // Some member-list calculations operate over getMembers(guildId).
-        addAfter("getMembers", (args, result) => {
-            const guildId = String(args?.[0] ?? "");
-            if (!Array.isArray(result)) return result;
-
-            return result.map(member => {
-                const userId = String(
-                    member?.userId ??
-                    member?.user?.id ??
-                    member?.user_id ??
-                    ""
-                );
-
-                const record = getActiveRoleSwap(guildId, userId);
-                return record ? mergeSpoofedMember(member, record) : member;
-            });
-        });
-
-        // Join date shown in the self profile can come from this direct getter.
-        addAfter("getSelfMemberJoinedAt", (args, result) => {
-            const guildId = String(args?.[0] ?? "");
-            let userId = "";
-            try {
-                userId = String(UserStore?.getCurrentUser?.()?.id ?? "");
-            } catch {}
-
-            const record = getActiveRoleSwap(guildId, userId);
-            if (!record) return result;
-
-            const joined =
-                record?.spoofed?.joined_at ??
-                record?.spoofed?.joinedAt;
-
-            if (!joined) return result;
-
-            try {
-                return new Date(joined);
-            } catch {
-                return result;
-            }
-        });
-
-        return () => {
-            for (const unpatch of unpatches.reverse()) {
-                try { unpatch(); } catch {}
-            }
-        };
-    }
-
     function roleModules() {
         const metro = vendetta?.metro;
         if (!metro?.findByProps) throw new Error("Kettu Metro API unavailable.");
@@ -788,81 +391,11 @@ async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId
             metro.findByProps("getMember", "getMembers") ||
             metro.findByProps("getMember");
 
-        const GuildRoleStore =
-            metro.findByProps("getSortedRoles", "getRole") ||
-            metro.findByProps("getSortedRoles") ||
-            metro.findByProps("getRole");
-
         if (!Dispatcher?.dispatch) throw new Error("Could not find Flux dispatcher.");
         if (!UserStore?.getUser) throw new Error("Could not find UserStore.");
         if (!GuildMemberStore?.getMember) throw new Error("Could not find GuildMemberStore.");
 
-        return { Dispatcher, UserStore, GuildMemberStore, GuildRoleStore };
-    }
-
-
-    function normalizeRoleColor(role) {
-        const raw = role?.color ?? role?.colorInt ?? 0;
-        const n = Number(raw) || 0;
-        if (!n) return { color: 0, colorString: null };
-
-        const hex = `#${n.toString(16).padStart(6, "0").slice(-6)}`;
-        return { color: n, colorString: hex };
-    }
-
-    function getTargetRolePresentation(GuildRoleStore, guildId, targetMember) {
-        const roleIds = new Set(
-            Array.isArray(targetMember?.roles) ? targetMember.roles.map(String) : []
-        );
-
-        let sorted = [];
-        try {
-            sorted = GuildRoleStore?.getSortedRoles?.(guildId) ?? [];
-        } catch {}
-
-        if (!Array.isArray(sorted) || !sorted.length) {
-            try {
-                const snapshot =
-                    GuildRoleStore?.getRolesSnapshot?.(guildId) ??
-                    GuildRoleStore?.getUnsafeMutableRoles?.(guildId) ??
-                    {};
-                sorted = Object.values(snapshot);
-            } catch {}
-        }
-
-        // Discord stores usually return roles low->high or high->low depending on build,
-        // so sort explicitly by position descending.
-        sorted = Array.isArray(sorted)
-            ? [...sorted].sort(
-                (a, b) => (Number(b?.position) || 0) - (Number(a?.position) || 0)
-            )
-            : [];
-
-        const mine = sorted.filter(role => roleIds.has(String(role?.id ?? "")));
-
-        const highestHoisted =
-            mine.find(role => Boolean(role?.hoist)) ?? null;
-
-        const highestColored =
-            mine.find(role => (Number(role?.color ?? role?.colorInt) || 0) !== 0) ??
-            null;
-
-        const { color, colorString } = normalizeRoleColor(highestColored);
-
-        return {
-            hoistRoleId:
-                highestHoisted?.id ??
-                targetMember?.hoistRoleId ??
-                targetMember?.hoist_role_id ??
-                null,
-            colorRoleId:
-                highestColored?.id ??
-                targetMember?.colorRoleId ??
-                targetMember?.color_role_id ??
-                null,
-            color,
-            colorString
-        };
+        return { Dispatcher, UserStore, GuildMemberStore };
     }
 
     function getMember(GuildMemberStore, guildId, userId) {
@@ -886,101 +419,8 @@ async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId
             premium_since: memberLike?.premium_since ?? null,
             pending: Boolean(memberLike?.pending),
             joined_at: memberLike?.joined_at ?? new Date().toISOString(),
-            flags: memberLike?.flags ?? 0,
-            hoistRoleId:
-                memberLike?.hoistRoleId ??
-                memberLike?.hoist_role_id ??
-                null,
-            hoist_role_id:
-                memberLike?.hoistRoleId ??
-                memberLike?.hoist_role_id ??
-                null,
-            colorRoleId:
-                memberLike?.colorRoleId ??
-                memberLike?.color_role_id ??
-                null,
-            color_role_id:
-                memberLike?.colorRoleId ??
-                memberLike?.color_role_id ??
-                null,
-            color: memberLike?.color ?? 0,
-            colorString:
-                memberLike?.colorString ??
-                memberLike?.color_string ??
-                null,
-            color_string:
-                memberLike?.colorString ??
-                memberLike?.color_string ??
-                null
+            flags: memberLike?.flags ?? 0
         });
-    }
-
-
-    function dispatchLocalHierarchyUpdate(Dispatcher, guildId, user, memberLike) {
-        // Best-effort update for Discord's cached member-list item.
-        // This is local-only and does not grant real roles/permissions.
-        try {
-            Dispatcher.dispatch({
-                type: "GUILD_MEMBER_LIST_UPDATE",
-                guildId,
-                guild_id: guildId,
-                ops: [
-                    {
-                        op: "UPDATE",
-                        item: {
-                            member: {
-                                user,
-                                roles: Array.isArray(memberLike?.roles)
-                                    ? [...memberLike.roles]
-                                    : [],
-                                nick: memberLike?.nick ?? null,
-                                avatar: memberLike?.avatar ?? null,
-                                communication_disabled_until:
-                                    memberLike?.communication_disabled_until ?? null,
-                                premium_since: memberLike?.premium_since ?? null,
-                                pending: Boolean(memberLike?.pending),
-                                joined_at:
-                                    memberLike?.joined_at ?? new Date().toISOString(),
-                                flags: memberLike?.flags ?? 0
-                            }
-                        }
-                    }
-                ]
-            });
-        } catch (err) {
-            try {
-                vendetta?.logger?.error?.(
-                    `[${PLUGIN_NAME}] hierarchy-update`,
-                    err
-                );
-            } catch {}
-        }
-
-        // Force local consumers to recalculate their member-list view.
-        // These are local Flux events only; they do not grant or edit server roles.
-        try {
-            Dispatcher.dispatch({
-                type: "GUILD_MEMBER_LIST_INVALIDATE",
-                guildId,
-                guild_id: guildId
-            });
-        } catch {}
-
-        try {
-            Dispatcher.dispatch({
-                type: "GUILD_MEMBER_UPDATE",
-                guildId,
-                guild_id: guildId,
-                user,
-                roles: Array.isArray(memberLike?.roles)
-                    ? [...memberLike.roles]
-                    : [],
-                joined_at:
-                    memberLike?.joined_at ??
-                    memberLike?.joinedAt ??
-                    new Date().toISOString()
-            });
-        } catch {}
     }
 
     function saveRoleSwap(record) {
@@ -1003,7 +443,7 @@ async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId
         }
 
         try {
-            const { Dispatcher, UserStore, GuildMemberStore, GuildRoleStore } = roleModules();
+            const { Dispatcher, UserStore, GuildMemberStore } = roleModules();
 
             const me = UserStore.getUser(myUserId);
             const myMember = getMember(GuildMemberStore, guildId, myUserId);
@@ -1024,12 +464,6 @@ async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId
                 flags: myMember.flags ?? 0
             };
 
-            const rolePresentation = getTargetRolePresentation(
-                GuildRoleStore,
-                guildId,
-                targetMember
-            );
-
             const spoofed = {
                 roles: Array.isArray(targetMember.roles) ? [...targetMember.roles] : [],
                 // Keep YOUR visible profile identity; only copy server roles.
@@ -1038,38 +472,11 @@ async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId
                 communication_disabled_until: myMember.communication_disabled_until ?? null,
                 premium_since: myMember.premium_since ?? null,
                 pending: Boolean(myMember.pending),
-                joined_at: targetMember.joined_at ?? targetMember.joinedAt ?? myMember.joined_at ?? myMember.joinedAt ?? new Date().toISOString(),
-                flags: myMember.flags ?? 0,
-                hoistRoleId: rolePresentation.hoistRoleId,
-                hoist_role_id: rolePresentation.hoistRoleId,
-                colorRoleId: rolePresentation.colorRoleId,
-                color_role_id: rolePresentation.colorRoleId,
-                color: rolePresentation.color,
-                colorString: rolePresentation.colorString,
-                color_string: rolePresentation.colorString,
+                joined_at: myMember.joined_at ?? null,
+                flags: myMember.flags ?? 0
             };
 
             dispatchLocalMemberUpdate(Dispatcher, guildId, me, spoofed);
-            dispatchLocalHierarchyUpdate(Dispatcher, guildId, me, spoofed);
-
-            // A second local refresh after the spoof record has been saved helps
-            // member-list/profile consumers that calculate hoist/color lazily.
-            setTimeout(() => {
-                try {
-                    dispatchLocalMemberUpdate(
-                        Dispatcher,
-                        guildId,
-                        me,
-                        spoofed
-                    );
-                    dispatchLocalHierarchyUpdate(
-                        Dispatcher,
-                        guildId,
-                        me,
-                        spoofed
-                    );
-                } catch {}
-            }, 250);
 
             saveRoleSwap({
                 guildId,
@@ -1079,7 +486,7 @@ async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId
                 spoofed
             });
 
-            toast(`Role Swap: ${spoofed.roles.length} role${spoofed.roles.length === 1 ? "" : "s"} locked locally + hierarchy refreshed.`);
+            toast(`Role Swap: locally copied ${spoofed.roles.length} role${spoofed.roles.length === 1 ? "" : "s"}.`);
         } catch (err) {
             try { vendetta?.logger?.error?.(`[${PLUGIN_NAME}] role-swap`, err); } catch {}
             toast(`Role Swap error: ${err?.message || String(err)}`);
@@ -1111,10 +518,9 @@ async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId
 
             const record = storage.roleSwaps[index];
             dispatchLocalMemberUpdate(Dispatcher, guildId, me, record.original);
-            dispatchLocalHierarchyUpdate(Dispatcher, guildId, me, record.original);
             storage.roleSwaps.splice(index, 1);
 
-            toast("Clear Role Swap: restored local profile • cosmetic chat off for this server.");
+            toast("Clear Role Swap: restored your original local roles.");
         } catch (err) {
             try { vendetta?.logger?.error?.(`[${PLUGIN_NAME}] clear-role-swap`, err); } catch {}
             toast(`Clear Role Swap error: ${err?.message || String(err)}`);
@@ -1180,7 +586,6 @@ async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId
             let injected = 0;
             let opened = 0;
             let failed = 0;
-            const failureDetails = [];
 
             // Conservative pacing for stability and normal API usage.
             const OPEN_SETTLE_MS = 1500;
@@ -1231,13 +636,6 @@ async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId
                     injected++;
                 } catch (err) {
                     failed++;
-
-                    const reason = formatError(err);
-
-                    failureDetails.push(
-                        `${userId} — ${reason || "unknown failure"}`
-                    );
-
                     try {
                         vendetta?.logger?.error?.(
                             `[${PLUGIN_NAME}] target ${userId}`,
@@ -1254,10 +652,7 @@ async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId
             toast(
                 `SDM Bulk: ${injected}/${ids.length} injected • ${opened} opened` +
                 (failed ? ` • ${failed} failed` : "") +
-                (failureDetails.length
-                    ? `\n${failureDetails.slice(0, 5).join("\n")}`
-                    : "") +
-                `\n• silent stable pacing`
+                ` • silent stable pacing`
             );
         } catch (err) {
             try { vendetta?.logger?.error?.(`[${PLUGIN_NAME}]`, err); } catch {}
@@ -1307,29 +702,6 @@ async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId
 
     return {
         onLoad() {
-            try {
-                unpatchRoleReadLayer = installRoleReadLayer();
-            } catch (err) {
-                try {
-                    vendetta?.logger?.error?.(
-                        `[${PLUGIN_NAME}] role-read-layer-install`,
-                        err
-                    );
-                } catch {}
-            }
-
-
-            try {
-                unpatchCosmeticSend = installCosmeticSendInterceptor();
-            } catch (err) {
-                try {
-                    vendetta?.logger?.error?.(
-                        `[${PLUGIN_NAME}] cosmetic-chat-install`,
-                        err
-                    );
-                } catch {}
-            }
-
             unregisterBulk = vendetta.commands.registerCommand({
                 name: "sdm-bulk",
                 displayName: "sdm-bulk",
@@ -1450,24 +822,10 @@ async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId
                 execute: clearRoleSwapExecute
             });
 
+            toast("SDM Bulk enabled.");
         },
 
         onUnload() {
-            try {
-                if (typeof unpatchRoleReadLayer === "function") {
-                    unpatchRoleReadLayer();
-                }
-            } catch {}
-            unpatchRoleReadLayer = null;
-
-
-            try {
-                if (typeof unpatchCosmeticSend === "function") {
-                    unpatchCosmeticSend();
-                }
-            } catch {}
-            unpatchCosmeticSend = null;
-
             try { unregisterBulk?.(); } catch {}
             try { unregisterClear?.(); } catch {}
             try { unregisterRoleSwap?.(); } catch {}
