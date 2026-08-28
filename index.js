@@ -236,6 +236,53 @@
 
 
 
+
+    function formatError(err) {
+        try {
+            if (err == null) return "unknown failure";
+            if (typeof err === "string") return err;
+
+            const parts = [];
+
+            if (err?.name) parts.push(`name=${err.name}`);
+            if (err?.message) parts.push(`message=${err.message}`);
+            if (err?.code !== undefined) parts.push(`code=${err.code}`);
+            if (err?.status !== undefined) parts.push(`status=${err.status}`);
+
+            const response =
+                err?.response ??
+                err?.body ??
+                err?.data ??
+                err?.raw ??
+                null;
+
+            if (response !== null && response !== undefined) {
+                try {
+                    parts.push(
+                        `response=${
+                            typeof response === "string"
+                                ? response
+                                : JSON.stringify(response)
+                        }`
+                    );
+                } catch {}
+            }
+
+            if (!parts.length) {
+                try {
+                    return JSON.stringify(err);
+                } catch {
+                    return String(err);
+                }
+            }
+
+            return parts.join(" | ");
+        } catch {
+            try { return String(err); } catch {}
+            return "unknown failure";
+        }
+    }
+
     function sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
@@ -267,7 +314,18 @@
         return null;
     }
 
-    async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId) {
+    
+    function stageError(stage, err) {
+        const detail = formatError(err);
+        const wrapped = new Error(`${stage}: ${detail}`);
+        try {
+            wrapped.stage = stage;
+            wrapped.original = err;
+        } catch {}
+        return wrapped;
+    }
+
+async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId) {
         const existing = getDmChannelId(ChannelStore, userId);
         if (existing) return existing;
 
@@ -1174,10 +1232,7 @@
                 } catch (err) {
                     failed++;
 
-                    const reason =
-                        err?.message ??
-                        err?.name ??
-                        String(err ?? "unknown failure");
+                    const reason = formatError(err);
 
                     failureDetails.push(
                         `${userId} — ${reason || "unknown failure"}`
