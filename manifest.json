@@ -1,13 +1,13 @@
 {
   "name": "Kettu SDM Toolkit",
-  "description": "All-in-one local-only Kettu toolkit: persistent bulk fake DMs, custom timestamps, clear-DM controls, and local server-role profile spoofing.",
+  "description": "Crash-safe all-in-one local Kettu toolkit.",
   "authors": [
     {
       "name": "reezywagers"
     }
   ],
   "main": "index.js",
-  "hash": "13b87e8c84bce13531ccf542c024b4b0ff7800f0405b160a5f3d76db8ad8b31e",
+  "hash": "89438bfd30b532955f8bd8ab40c3e27e297b7b66e0ab237c3cccec35e36e0c4b",
   "vendetta": {
     "icon": "ic_message"
   }
