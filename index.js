@@ -1,5 +1,5 @@
 (() => {
-    const PLUGIN_NAME = "SDM Bulk";
+    const PLUGIN_NAME = "Reezy Mass DM";
     const MAX_TARGETS = 100;
 
     let unregisterBulk = null;
@@ -488,18 +488,18 @@
         const timeInput = getArg(args, "time");
 
         if (!ids.length) {
-            toast("SDM Bulk: no valid user IDs.");
+            toast("Reezy Mass DM: no valid user IDs.");
             return;
         }
 
         if (!script.trim()) {
-            toast("SDM Bulk: script cannot be empty.");
+            toast("Reezy Mass DM: script cannot be empty.");
             return;
         }
 
         const SAFE_MAX_TARGETS = 50;
         if (ids.length > SAFE_MAX_TARGETS) {
-            toast(`SDM Bulk: max ${SAFE_MAX_TARGETS} IDs per run in stable mode.`);
+            toast(`Reezy Mass DM: max ${SAFE_MAX_TARGETS} IDs per run in stable mode.`);
             return;
         }
 
@@ -580,13 +580,13 @@
             }
 
             toast(
-                `SDM Bulk: ${injected}/${ids.length} injected • ${opened} opened` +
+                `Reezy Mass DM: ${injected}/${ids.length} injected • ${opened} opened` +
                 (failed ? ` • ${failed} failed` : "") +
                 ` • stable pacing`
             );
         } catch (err) {
             try { vendetta?.logger?.error?.(`[${PLUGIN_NAME}]`, err); } catch {}
-            toast(`SDM Bulk error: ${err?.message || String(err)}`);
+            toast(`Reezy Mass DM error: ${err?.message || String(err)}`);
         }
     }
 
@@ -633,8 +633,8 @@
     return {
         onLoad() {
             unregisterBulk = vendetta.commands.registerCommand({
-                name: "sdm-bulk",
-                displayName: "sdm-bulk",
+                name: "reezy-mass-dm",
+                displayName: "reezy-mass-dm",
                 description: "Open DMs and inject a local preset script for multiple users",
                 displayDescription: "Open DMs and inject a local preset script for multiple users",
                 options: [
@@ -677,8 +677,8 @@
             unregisterClear = vendetta.commands.registerCommand({
                 name: "clear-dm",
                 displayName: "clear-dm",
-                description: "Clear spoofed DMs created by SDM Bulk",
-                displayDescription: "Clear spoofed DMs created by SDM Bulk",
+                description: "Clear spoofed DMs created by Reezy Mass DM",
+                displayDescription: "Clear spoofed DMs created by Reezy Mass DM",
                 options: [
                     {
                         name: "targets",
@@ -752,7 +752,7 @@
                 execute: clearRoleSwapExecute
             });
 
-            toast("SDM Bulk enabled.");
+            toast("Reezy Mass DM enabled.");
         },
 
         onUnload() {
