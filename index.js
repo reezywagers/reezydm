@@ -110,11 +110,8 @@
 
         if (!GuildMemberStore) return null;
 
-        // Try getMembers() across all cached guilds. Discord/Kettu builds use
-        // slightly different shapes, so handle arrays and keyed objects.
         try {
             const all = GuildMemberStore.getMembers?.();
-
             if (all && typeof all === "object") {
                 for (const key of Object.keys(all)) {
                     const members = all[key];
@@ -331,9 +328,8 @@
 
         let result;
 
-        // Use Stable v2's working DM-opening action.
-        // This may navigate/open the DM in Kettu, but it reliably creates/loads
-        // the thread before the local fake incoming message is injected.
+        // Current Discord builds use an object with recipientIds.
+        // Keep a fallback for older Vendetta/Revenge builds.
         try {
             result = ChannelActionCreators.openPrivateChannel({
                 recipientIds: [userId]
@@ -600,7 +596,7 @@
 
                     if (!user) {
                         throw new Error(
-                            `Could not resolve ${userId} from cached profile or mutual-server member data. View their profile once and retry.`
+                            `Could not resolve ${userId} from cached profile or mutual-server data. View their profile once and retry.`
                         );
                     }
 
