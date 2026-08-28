@@ -1,13 +1,13 @@
 {
   "name": "Reezy Mass DM",
-  "description": "Local-only fake DM plugin.",
+  "description": "Local-only fake incoming DMs with cached/mutual-server profile resolution.",
   "authors": [
     {
       "name": "reezywagers"
     }
   ],
   "main": "index.js",
-  "hash": "df0fba6a0a046c6cfc5580b6666ade5aa68a7ee55a33035305718c2ed748c3b9",
+  "hash": "fc7b3da8d276e323283704f8fb7cfec0c781fc83084d994bf03a21b66677a157",
   "vendetta": {
     "icon": "ic_message"
   }
