@@ -7,6 +7,7 @@
     let unregisterRoleSwap = null;
     let unregisterClearRoleSwap = null;
     let unpatchCosmeticSend = null;
+    let unpatchRoleReadLayer = null;
 
     const storage = (() => {
         try {
@@ -523,6 +524,169 @@
         );
     }
 
+
+    function getActiveRoleSwap(guildId, userId) {
+        if (!guildId || !userId) return null;
+        return storage.roleSwaps.find(
+            record =>
+                String(record?.guildId) === String(guildId) &&
+                String(record?.myUserId) === String(userId)
+        ) ?? null;
+    }
+
+    function mergeSpoofedMember(realMember, record) {
+        if (!record || !realMember) return realMember;
+
+        const spoofed = record.spoofed ?? {};
+        const joined =
+            spoofed.joined_at ??
+            spoofed.joinedAt ??
+            realMember.joined_at ??
+            realMember.joinedAt ??
+            null;
+
+        return {
+            ...realMember,
+            roles: Array.isArray(spoofed.roles)
+                ? [...spoofed.roles]
+                : Array.isArray(realMember.roles)
+                    ? [...realMember.roles]
+                    : [],
+            joined_at: joined,
+            joinedAt: joined
+        };
+    }
+
+    function installRoleReadLayer() {
+        const metro = vendetta?.metro;
+        const patcher = vendetta?.patcher;
+
+        if (!metro?.findByProps || !patcher?.after) {
+            throw new Error("Kettu patcher API unavailable.");
+        }
+
+        const GuildMemberStore =
+            metro.findByProps("getMember", "getMembers") ||
+            metro.findByProps("getMember");
+
+        const UserStore = metro.findByProps("getUser", "getCurrentUser");
+
+        if (!GuildMemberStore?.getMember) {
+            throw new Error("Could not find GuildMemberStore.");
+        }
+
+        const unpatches = [];
+
+        const addAfter = (name, callback) => {
+            try {
+                if (typeof GuildMemberStore?.[name] === "function") {
+                    const unpatch = patcher.after(
+                        name,
+                        GuildMemberStore,
+                        callback
+                    );
+                    if (typeof unpatch === "function") {
+                        unpatches.push(unpatch);
+                    }
+                }
+            } catch {}
+        };
+
+        // Most profile/member displays use this.
+        addAfter("getMember", (args, result) => {
+            const guildId = String(args?.[0] ?? "");
+            const userId = String(args?.[1] ?? "");
+            const record = getActiveRoleSwap(guildId, userId);
+            return mergeSpoofedMember(result, record);
+        });
+
+        // Some profile surfaces deliberately bypass getMember.
+        addAfter("getTrueMember", (args, result) => {
+            const guildId = String(args?.[0] ?? "");
+            const userId = String(args?.[1] ?? "");
+            const record = getActiveRoleSwap(guildId, userId);
+            return mergeSpoofedMember(result, record);
+        });
+
+        // Current-user profile surfaces can use dedicated self getters.
+        const patchSelfMember = (name) => {
+            addAfter(name, (args, result) => {
+                const guildId = String(args?.[0] ?? "");
+                let userId = "";
+                try {
+                    userId = String(UserStore?.getCurrentUser?.()?.id ?? "");
+                } catch {}
+                const record = getActiveRoleSwap(guildId, userId);
+                return mergeSpoofedMember(result, record);
+            });
+        };
+
+        patchSelfMember("getSelfMember");
+        patchSelfMember("getCachedSelfMember");
+
+        // Member list / hierarchy code can use the pending-role getter directly
+        // instead of reading member.roles.
+        addAfter("getMemberRoleWithPendingUpdates", (args, result) => {
+            const guildId = String(args?.[0] ?? "");
+            const userId = String(args?.[1] ?? "");
+            const record = getActiveRoleSwap(guildId, userId);
+
+            if (!record) return result;
+
+            return Array.isArray(record?.spoofed?.roles)
+                ? [...record.spoofed.roles]
+                : result;
+        });
+
+        // Some member-list calculations operate over getMembers(guildId).
+        addAfter("getMembers", (args, result) => {
+            const guildId = String(args?.[0] ?? "");
+            if (!Array.isArray(result)) return result;
+
+            return result.map(member => {
+                const userId = String(
+                    member?.userId ??
+                    member?.user?.id ??
+                    member?.user_id ??
+                    ""
+                );
+
+                const record = getActiveRoleSwap(guildId, userId);
+                return record ? mergeSpoofedMember(member, record) : member;
+            });
+        });
+
+        // Join date shown in the self profile can come from this direct getter.
+        addAfter("getSelfMemberJoinedAt", (args, result) => {
+            const guildId = String(args?.[0] ?? "");
+            let userId = "";
+            try {
+                userId = String(UserStore?.getCurrentUser?.()?.id ?? "");
+            } catch {}
+
+            const record = getActiveRoleSwap(guildId, userId);
+            if (!record) return result;
+
+            const joined =
+                record?.spoofed?.joined_at ??
+                record?.spoofed?.joinedAt;
+
+            if (!joined) return result;
+
+            try {
+                return new Date(joined);
+            } catch {
+                return result;
+            }
+        });
+
+        return () => {
+            for (const unpatch of unpatches.reverse()) {
+                try { unpatch(); } catch {}
+            }
+        };
+    }
+
     function roleModules() {
         const metro = vendetta?.metro;
         if (!metro?.findByProps) throw new Error("Kettu Metro API unavailable.");
@@ -605,6 +769,32 @@
                 );
             } catch {}
         }
+
+        // Force local consumers to recalculate their member-list view.
+        // These are local Flux events only; they do not grant or edit server roles.
+        try {
+            Dispatcher.dispatch({
+                type: "GUILD_MEMBER_LIST_INVALIDATE",
+                guildId,
+                guild_id: guildId
+            });
+        } catch {}
+
+        try {
+            Dispatcher.dispatch({
+                type: "GUILD_MEMBER_UPDATE",
+                guildId,
+                guild_id: guildId,
+                user,
+                roles: Array.isArray(memberLike?.roles)
+                    ? [...memberLike.roles]
+                    : [],
+                joined_at:
+                    memberLike?.joined_at ??
+                    memberLike?.joinedAt ??
+                    new Date().toISOString()
+            });
+        } catch {}
     }
 
     function saveRoleSwap(record) {
@@ -671,7 +861,7 @@
                 spoofed
             });
 
-            toast(`Role Swap: locally copied ${spoofed.roles.length} role${spoofed.roles.length === 1 ? "" : "s"}.`);
+            toast(`Role Swap: ${spoofed.roles.length} role${spoofed.roles.length === 1 ? "" : "s"} locked locally + hierarchy refreshed.`);
         } catch (err) {
             try { vendetta?.logger?.error?.(`[${PLUGIN_NAME}] role-swap`, err); } catch {}
             toast(`Role Swap error: ${err?.message || String(err)}`);
@@ -889,6 +1079,18 @@
     return {
         onLoad() {
             try {
+                unpatchRoleReadLayer = installRoleReadLayer();
+            } catch (err) {
+                try {
+                    vendetta?.logger?.error?.(
+                        `[${PLUGIN_NAME}] role-read-layer-install`,
+                        err
+                    );
+                } catch {}
+            }
+
+
+            try {
                 unpatchCosmeticSend = installCosmeticSendInterceptor();
             } catch (err) {
                 try {
@@ -1019,10 +1221,17 @@
                 execute: clearRoleSwapExecute
             });
 
-            toast("SDM Bulk enabled.");
         },
 
         onUnload() {
+            try {
+                if (typeof unpatchRoleReadLayer === "function") {
+                    unpatchRoleReadLayer();
+                }
+            } catch {}
+            unpatchRoleReadLayer = null;
+
+
             try {
                 if (typeof unpatchCosmeticSend === "function") {
                     unpatchCosmeticSend();
