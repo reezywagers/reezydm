@@ -1,13 +1,13 @@
 {
-  "name": "Kettu SDM Role Fix v9.1 Crash-Safe",
-  "description": "Crash-safe rollback to the persistent local role/profile spoof layer. Removes the broad UserStore identity swap that caused Kettu crashes.",
+  "name": "Kettu SDM Hierarchy v10",
+  "description": "Crash-safe role/profile spoof plus a hierarchy-only read-layer patch that swaps local member-list rows/sections without touching real roles.",
   "authors": [
     {
       "name": "reezywagers"
     }
   ],
   "main": "index.js",
-  "hash": "3ead5e0e18382b93962667449e9e710d052b7256bc378178592403ffacce2d32",
+  "hash": "be1b9fe73c2a15bc416ebb3a8561108d6f1b94486a09bc9104593cd9a3ffd77e",
   "vendetta": {
     "icon": "ic_message"
   }
