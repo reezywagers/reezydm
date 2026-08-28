@@ -6,6 +6,7 @@
     let unregisterClear = null;
     let unregisterRoleSwap = null;
     let unregisterClearRoleSwap = null;
+    let unpatchCosmeticSend = null;
 
     const storage = (() => {
         try {
@@ -71,13 +72,18 @@
             metro.findByProps("getChannel", "getDMFromUserId");
 
         const ChannelActionCreators =
+            metro.findByProps("openPrivateChannel", "ensurePrivateChannel") ||
+            metro.findByProps("ensurePrivateChannel") ||
             metro.findByProps("openPrivateChannel");
 
         if (!Dispatcher?.dispatch) throw new Error("Could not find Flux dispatcher.");
         if (!UserStore?.getUser) throw new Error("Could not find UserStore.");
         if (!ChannelStore?.getDMFromUserId) throw new Error("Could not find ChannelStore.");
-        if (!ChannelActionCreators?.openPrivateChannel) {
-            throw new Error("Could not find Discord openPrivateChannel action.");
+        if (
+            !ChannelActionCreators?.ensurePrivateChannel &&
+            !ChannelActionCreators?.openPrivateChannel
+        ) {
+            throw new Error("Could not find Discord private-channel action.");
         }
 
         return {
@@ -260,15 +266,77 @@
         return null;
     }
 
-    async function openRealDm(ChannelActionCreators, ChannelStore, userId) {
-        // If the DM already exists, don't make another request.
+    async function openRealDm(ChannelActionCreators, ChannelStore, UserStore, userId) {
         const existing = getDmChannelId(ChannelStore, userId);
         if (existing) return existing;
 
+        const currentUserId = (() => {
+            try { return UserStore.getCurrentUser()?.id ?? null; } catch { return null; }
+        })();
+
+        // Preferred path: ensure/create the DM without selecting/navigating to it.
+        if (ChannelActionCreators?.ensurePrivateChannel) {
+            let result;
+
+            try {
+                // Older/current Discord client builds commonly use
+                // ensurePrivateChannel(currentUserId, recipientId).
+                if (currentUserId) {
+                    result = ChannelActionCreators.ensurePrivateChannel(
+                        currentUserId,
+                        userId
+                    );
+                } else {
+                    result = ChannelActionCreators.ensurePrivateChannel(userId);
+                }
+            } catch (firstError) {
+                // Some builds use an object argument instead.
+                try {
+                    result = ChannelActionCreators.ensurePrivateChannel({
+                        recipientIds: [userId]
+                    });
+                } catch {
+                    throw firstError;
+                }
+            }
+
+            if (result && typeof result.then === "function") {
+                try {
+                    const resolved = await result;
+                    const directId =
+                        typeof resolved === "string" ? resolved :
+                        resolved?.id ??
+                        resolved?.channel?.id ??
+                        resolved?.channelId;
+
+                    if (directId) return String(directId);
+                } catch (err) {
+                    throw new Error(
+                        `Discord could not ensure DM: ${err?.message || String(err)}`
+                    );
+                }
+            } else {
+                const directId =
+                    typeof result === "string" ? result :
+                    result?.id ??
+                    result?.channel?.id ??
+                    result?.channelId;
+
+                if (directId) return String(directId);
+            }
+
+            const ensuredId = await waitForDmChannel(ChannelStore, userId, 5000);
+            if (ensuredId) return ensuredId;
+        }
+
+        // Fallback only: some Kettu/Discord builds may expose openPrivateChannel
+        // but not ensurePrivateChannel. This can select the DM visually.
+        if (!ChannelActionCreators?.openPrivateChannel) {
+            throw new Error("No usable private-channel opener exists.");
+        }
+
         let result;
 
-        // Current Discord builds use an object with recipientIds.
-        // Keep a fallback for older Vendetta/Revenge builds.
         try {
             result = ChannelActionCreators.openPrivateChannel({
                 recipientIds: [userId]
@@ -281,21 +349,24 @@
             }
         }
 
-        // Some builds return a Promise / thenable, others only dispatch actions.
         if (result && typeof result.then === "function") {
             try {
                 const resolved = await result;
                 const directId =
+                    typeof resolved === "string" ? resolved :
                     resolved?.id ??
                     resolved?.channel?.id ??
                     resolved?.channelId;
 
                 if (directId) return String(directId);
             } catch (err) {
-                throw new Error(`Discord could not open DM: ${err?.message || String(err)}`);
+                throw new Error(
+                    `Discord could not open DM: ${err?.message || String(err)}`
+                );
             }
         } else {
             const directId =
+                typeof result === "string" ? result :
                 result?.id ??
                 result?.channel?.id ??
                 result?.channelId;
@@ -303,13 +374,153 @@
             if (directId) return String(directId);
         }
 
-        // The store is the source of truth. Give Discord time to create/cache it.
         const channelId = await waitForDmChannel(ChannelStore, userId, 5000);
         if (!channelId) {
             throw new Error("DM channel did not appear in ChannelStore.");
         }
 
         return channelId;
+    }
+
+
+    function getGuildIdFromChannel(ChannelStore, channelId) {
+        try {
+            const channel = ChannelStore.getChannel?.(channelId);
+            return channel?.guild_id ?? channel?.guildId ?? null;
+        } catch {
+            return null;
+        }
+    }
+
+    function isCosmeticChatActiveForGuild(guildId) {
+        if (!guildId) return false;
+        return storage.roleSwaps.some(record => record?.guildId === guildId);
+    }
+
+    function dispatchOwnLocalMessage(Dispatcher, UserStore, channelId, content) {
+        const me = UserStore.getCurrentUser?.();
+        if (!me) throw new Error("Current user unavailable.");
+
+        const now = Date.now();
+        const id = fakeSnowflakeFromTimestamp(
+            now,
+            Math.floor(Math.random() * 1000)
+        );
+
+        Dispatcher.dispatch({
+            type: "MESSAGE_CREATE",
+            message: {
+                id,
+                type: 0,
+                channel_id: channelId,
+                author: me,
+                content: String(content ?? ""),
+                timestamp: new Date(now).toISOString(),
+                edited_timestamp: null,
+                tts: false,
+                mention_everyone: false,
+                mentions: [],
+                mention_roles: [],
+                mention_channels: [],
+                attachments: [],
+                embeds: [],
+                reactions: [],
+                pinned: false,
+                flags: 0,
+                components: [],
+                sticker_items: []
+            },
+            channelId,
+            optimistic: false
+        });
+
+        return id;
+    }
+
+    function installCosmeticSendInterceptor() {
+        const metro = vendetta?.metro;
+        const patcher = vendetta?.patcher;
+
+        if (!metro?.findByProps || !patcher?.instead) {
+            throw new Error("Kettu patcher API unavailable.");
+        }
+
+        const MessageActions =
+            metro.findByProps("sendMessage", "editMessage") ||
+            metro.findByProps("sendMessage");
+
+        const Dispatcher = metro.findByProps("dispatch", "subscribe");
+        const UserStore = metro.findByProps("getUser", "getCurrentUser");
+        const ChannelStore =
+            metro.findByProps("getChannel", "getDMFromUserId") ||
+            metro.findByProps("getChannel");
+
+        if (!MessageActions?.sendMessage) {
+            throw new Error("Could not find sendMessage.");
+        }
+
+        return patcher.instead(
+            "sendMessage",
+            MessageActions,
+            (args, original) => {
+                try {
+                    const channelId = String(args?.[0] ?? "");
+                    const guildId = getGuildIdFromChannel(
+                        ChannelStore,
+                        channelId
+                    );
+
+                    // Only intercept normal channel sends inside servers where
+                    // a local /role-swap is active. DMs and other servers send normally.
+                    if (!isCosmeticChatActiveForGuild(guildId)) {
+                        return original(...args);
+                    }
+
+                    const payload = args?.[1] ?? {};
+                    const content =
+                        typeof payload === "string"
+                            ? payload
+                            : payload?.content ?? "";
+
+                    if (!String(content).trim()) {
+                        toast("Cosmetic Chat: text only.");
+                        return Promise.resolve({
+                            local: true,
+                            blockedFromServer: true
+                        });
+                    }
+
+                    dispatchOwnLocalMessage(
+                        Dispatcher,
+                        UserStore,
+                        channelId,
+                        content
+                    );
+
+                    // Critical: never call original sendMessage in cosmetic mode.
+                    return Promise.resolve({
+                        local: true,
+                        blockedFromServer: true
+                    });
+                } catch (err) {
+                    try {
+                        vendetta?.logger?.error?.(
+                            `[${PLUGIN_NAME}] cosmetic-send`,
+                            err
+                        );
+                    } catch {}
+
+                    // Fail closed: an interceptor error must never leak the message
+                    // to Discord's real send path.
+                    toast("Cosmetic Chat error: message stayed local.");
+                    return Promise.resolve({
+                        local: true,
+                        blockedFromServer: true,
+                        error: true
+                    });
+                }
+            }
+        );
     }
 
     function roleModules() {
@@ -352,6 +563,48 @@
             joined_at: memberLike?.joined_at ?? new Date().toISOString(),
             flags: memberLike?.flags ?? 0
         });
+    }
+
+
+    function dispatchLocalHierarchyUpdate(Dispatcher, guildId, user, memberLike) {
+        // Best-effort update for Discord's cached member-list item.
+        // This is local-only and does not grant real roles/permissions.
+        try {
+            Dispatcher.dispatch({
+                type: "GUILD_MEMBER_LIST_UPDATE",
+                guildId,
+                guild_id: guildId,
+                ops: [
+                    {
+                        op: "UPDATE",
+                        item: {
+                            member: {
+                                user,
+                                roles: Array.isArray(memberLike?.roles)
+                                    ? [...memberLike.roles]
+                                    : [],
+                                nick: memberLike?.nick ?? null,
+                                avatar: memberLike?.avatar ?? null,
+                                communication_disabled_until:
+                                    memberLike?.communication_disabled_until ?? null,
+                                premium_since: memberLike?.premium_since ?? null,
+                                pending: Boolean(memberLike?.pending),
+                                joined_at:
+                                    memberLike?.joined_at ?? new Date().toISOString(),
+                                flags: memberLike?.flags ?? 0
+                            }
+                        }
+                    }
+                ]
+            });
+        } catch (err) {
+            try {
+                vendetta?.logger?.error?.(
+                    `[${PLUGIN_NAME}] hierarchy-update`,
+                    err
+                );
+            } catch {}
+        }
     }
 
     function saveRoleSwap(record) {
@@ -403,11 +656,12 @@
                 communication_disabled_until: myMember.communication_disabled_until ?? null,
                 premium_since: myMember.premium_since ?? null,
                 pending: Boolean(myMember.pending),
-                joined_at: myMember.joined_at ?? null,
+                joined_at: targetMember.joined_at ?? targetMember.joinedAt ?? myMember.joined_at ?? myMember.joinedAt ?? new Date().toISOString(),
                 flags: myMember.flags ?? 0
             };
 
             dispatchLocalMemberUpdate(Dispatcher, guildId, me, spoofed);
+            dispatchLocalHierarchyUpdate(Dispatcher, guildId, me, spoofed);
 
             saveRoleSwap({
                 guildId,
@@ -449,9 +703,10 @@
 
             const record = storage.roleSwaps[index];
             dispatchLocalMemberUpdate(Dispatcher, guildId, me, record.original);
+            dispatchLocalHierarchyUpdate(Dispatcher, guildId, me, record.original);
             storage.roleSwaps.splice(index, 1);
 
-            toast("Clear Role Swap: restored your original local roles.");
+            toast("Clear Role Swap: restored local profile • cosmetic chat off for this server.");
         } catch (err) {
             try { vendetta?.logger?.error?.(`[${PLUGIN_NAME}] clear-role-swap`, err); } catch {}
             toast(`Clear Role Swap error: ${err?.message || String(err)}`);
@@ -519,8 +774,8 @@
             let failed = 0;
 
             // Conservative pacing for stability and normal API usage.
-            const OPEN_SETTLE_MS = 1200;
-            const BETWEEN_TARGETS_MS = 2500;
+            const OPEN_SETTLE_MS = 1500;
+            const BETWEEN_TARGETS_MS = 3000;
 
             for (let i = 0; i < ids.length; i++) {
                 const userId = ids[i];
@@ -535,6 +790,7 @@
                     const channelId = await openRealDm(
                         ChannelActionCreators,
                         ChannelStore,
+                        UserStore,
                         userId
                     );
 
@@ -582,7 +838,7 @@
             toast(
                 `SDM Bulk: ${injected}/${ids.length} injected • ${opened} opened` +
                 (failed ? ` • ${failed} failed` : "") +
-                ` • stable pacing`
+                ` • silent stable pacing`
             );
         } catch (err) {
             try { vendetta?.logger?.error?.(`[${PLUGIN_NAME}]`, err); } catch {}
@@ -632,6 +888,17 @@
 
     return {
         onLoad() {
+            try {
+                unpatchCosmeticSend = installCosmeticSendInterceptor();
+            } catch (err) {
+                try {
+                    vendetta?.logger?.error?.(
+                        `[${PLUGIN_NAME}] cosmetic-chat-install`,
+                        err
+                    );
+                } catch {}
+            }
+
             unregisterBulk = vendetta.commands.registerCommand({
                 name: "sdm-bulk",
                 displayName: "sdm-bulk",
@@ -756,6 +1023,13 @@
         },
 
         onUnload() {
+            try {
+                if (typeof unpatchCosmeticSend === "function") {
+                    unpatchCosmeticSend();
+                }
+            } catch {}
+            unpatchCosmeticSend = null;
+
             try { unregisterBulk?.(); } catch {}
             try { unregisterClear?.(); } catch {}
             try { unregisterRoleSwap?.(); } catch {}
