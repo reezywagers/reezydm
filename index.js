@@ -981,7 +981,7 @@
                 premium_since: myMember.premium_since ?? null,
                 pending: Boolean(myMember.pending),
                 joined_at: targetMember.joined_at ?? targetMember.joinedAt ?? myMember.joined_at ?? myMember.joinedAt ?? new Date().toISOString(),
-                flags: myMember.flags ?? 0
+                flags: myMember.flags ?? 0,
                 hoistRoleId: rolePresentation.hoistRoleId,
                 hoist_role_id: rolePresentation.hoistRoleId,
                 colorRoleId: rolePresentation.colorRoleId,
