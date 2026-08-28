@@ -1,13 +1,13 @@
 {
-  "name": "Kettu SDM Bulk Debug v9.3",
-  "description": "Crash-safe SDM bulk debug build with full object error serialization and DM-open stage labels.",
+  "name": "Kettu SDM Toolkit Silent",
+  "description": "Stable local-only toolkit that silently ensures real DM channels before local fake-message injection.",
   "authors": [
     {
       "name": "reezywagers"
     }
   ],
   "main": "index.js",
-  "hash": "343545bad4d7f6f46e0219fa5c85d9b01d3135af8300c791272b2983613248da",
+  "hash": "4d0a0111cc553acd7d9e1110a09aa05d3dda813d6a099f32a62301661dee30c9",
   "vendetta": {
     "icon": "ic_message"
   }
