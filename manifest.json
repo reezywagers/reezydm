@@ -1,13 +1,13 @@
 {
-  "name": "Kettu SDM Hierarchy v10",
-  "description": "Crash-safe role/profile spoof plus a hierarchy-only read-layer patch that swaps local member-list rows/sections without touching real roles.",
+  "name": "Kettu SDM Bulk Debug v9.2",
+  "description": "Crash-safe build with detailed per-target SDM Bulk failure reasons.",
   "authors": [
     {
       "name": "reezywagers"
     }
   ],
   "main": "index.js",
-  "hash": "be1b9fe73c2a15bc416ebb3a8561108d6f1b94486a09bc9104593cd9a3ffd77e",
+  "hash": "e2081a52251af1bd8396ed29c5bc9dc9dfb0c892df3c6bfce21be5f65d7e36fe",
   "vendetta": {
     "icon": "ic_message"
   }
