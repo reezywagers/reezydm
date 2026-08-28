@@ -1,13 +1,13 @@
 {
-  "name": "Kettu SDM Toolkit Silent",
-  "description": "Stable local-only toolkit that silently ensures real DM channels before local fake-message injection.",
+  "name": "Kettu SDM Toolkit Stable",
+  "description": "Stable local-only toolkit using Discord's real DM opener with conservative sequential pacing.",
   "authors": [
     {
       "name": "reezywagers"
     }
   ],
   "main": "index.js",
-  "hash": "4d0a0111cc553acd7d9e1110a09aa05d3dda813d6a099f32a62301661dee30c9",
+  "hash": "ad546be84b56dc05554b02e24bf4cc3820e25f0ea0ab3d446bc18306ae7fae15",
   "vendetta": {
     "icon": "ic_message"
   }
