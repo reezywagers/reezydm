@@ -545,6 +545,20 @@
             realMember.joinedAt ??
             null;
 
+        const colorRoleId =
+            spoofed.colorRoleId ??
+            spoofed.color_role_id ??
+            realMember.colorRoleId ??
+            realMember.color_role_id ??
+            null;
+
+        const hoistRoleId =
+            spoofed.hoistRoleId ??
+            spoofed.hoist_role_id ??
+            realMember.hoistRoleId ??
+            realMember.hoist_role_id ??
+            null;
+
         return {
             ...realMember,
             roles: Array.isArray(spoofed.roles)
@@ -553,7 +567,26 @@
                     ? [...realMember.roles]
                     : [],
             joined_at: joined,
-            joinedAt: joined
+            joinedAt: joined,
+
+            // Role presentation metadata used by different Discord/Kettu builds.
+            colorRoleId,
+            color_role_id: colorRoleId,
+            hoistRoleId,
+            hoist_role_id: hoistRoleId,
+            color: spoofed.color ?? realMember.color ?? 0,
+            colorString:
+                spoofed.colorString ??
+                spoofed.color_string ??
+                realMember.colorString ??
+                realMember.color_string ??
+                null,
+            color_string:
+                spoofed.colorString ??
+                spoofed.color_string ??
+                realMember.color_string ??
+                realMember.colorString ??
+                null
         };
     }
 
@@ -697,11 +730,81 @@
             metro.findByProps("getMember", "getMembers") ||
             metro.findByProps("getMember");
 
+        const GuildRoleStore =
+            metro.findByProps("getSortedRoles", "getRole") ||
+            metro.findByProps("getSortedRoles") ||
+            metro.findByProps("getRole");
+
         if (!Dispatcher?.dispatch) throw new Error("Could not find Flux dispatcher.");
         if (!UserStore?.getUser) throw new Error("Could not find UserStore.");
         if (!GuildMemberStore?.getMember) throw new Error("Could not find GuildMemberStore.");
 
-        return { Dispatcher, UserStore, GuildMemberStore };
+        return { Dispatcher, UserStore, GuildMemberStore, GuildRoleStore };
+    }
+
+
+    function normalizeRoleColor(role) {
+        const raw = role?.color ?? role?.colorInt ?? 0;
+        const n = Number(raw) || 0;
+        if (!n) return { color: 0, colorString: null };
+
+        const hex = `#${n.toString(16).padStart(6, "0").slice(-6)}`;
+        return { color: n, colorString: hex };
+    }
+
+    function getTargetRolePresentation(GuildRoleStore, guildId, targetMember) {
+        const roleIds = new Set(
+            Array.isArray(targetMember?.roles) ? targetMember.roles.map(String) : []
+        );
+
+        let sorted = [];
+        try {
+            sorted = GuildRoleStore?.getSortedRoles?.(guildId) ?? [];
+        } catch {}
+
+        if (!Array.isArray(sorted) || !sorted.length) {
+            try {
+                const snapshot =
+                    GuildRoleStore?.getRolesSnapshot?.(guildId) ??
+                    GuildRoleStore?.getUnsafeMutableRoles?.(guildId) ??
+                    {};
+                sorted = Object.values(snapshot);
+            } catch {}
+        }
+
+        // Discord stores usually return roles low->high or high->low depending on build,
+        // so sort explicitly by position descending.
+        sorted = Array.isArray(sorted)
+            ? [...sorted].sort(
+                (a, b) => (Number(b?.position) || 0) - (Number(a?.position) || 0)
+            )
+            : [];
+
+        const mine = sorted.filter(role => roleIds.has(String(role?.id ?? "")));
+
+        const highestHoisted =
+            mine.find(role => Boolean(role?.hoist)) ?? null;
+
+        const highestColored =
+            mine.find(role => (Number(role?.color ?? role?.colorInt) || 0) !== 0) ??
+            null;
+
+        const { color, colorString } = normalizeRoleColor(highestColored);
+
+        return {
+            hoistRoleId:
+                highestHoisted?.id ??
+                targetMember?.hoistRoleId ??
+                targetMember?.hoist_role_id ??
+                null,
+            colorRoleId:
+                highestColored?.id ??
+                targetMember?.colorRoleId ??
+                targetMember?.color_role_id ??
+                null,
+            color,
+            colorString
+        };
     }
 
     function getMember(GuildMemberStore, guildId, userId) {
@@ -725,7 +828,32 @@
             premium_since: memberLike?.premium_since ?? null,
             pending: Boolean(memberLike?.pending),
             joined_at: memberLike?.joined_at ?? new Date().toISOString(),
-            flags: memberLike?.flags ?? 0
+            flags: memberLike?.flags ?? 0,
+            hoistRoleId:
+                memberLike?.hoistRoleId ??
+                memberLike?.hoist_role_id ??
+                null,
+            hoist_role_id:
+                memberLike?.hoistRoleId ??
+                memberLike?.hoist_role_id ??
+                null,
+            colorRoleId:
+                memberLike?.colorRoleId ??
+                memberLike?.color_role_id ??
+                null,
+            color_role_id:
+                memberLike?.colorRoleId ??
+                memberLike?.color_role_id ??
+                null,
+            color: memberLike?.color ?? 0,
+            colorString:
+                memberLike?.colorString ??
+                memberLike?.color_string ??
+                null,
+            color_string:
+                memberLike?.colorString ??
+                memberLike?.color_string ??
+                null
         });
     }
 
@@ -817,7 +945,7 @@
         }
 
         try {
-            const { Dispatcher, UserStore, GuildMemberStore } = roleModules();
+            const { Dispatcher, UserStore, GuildMemberStore, GuildRoleStore } = roleModules();
 
             const me = UserStore.getUser(myUserId);
             const myMember = getMember(GuildMemberStore, guildId, myUserId);
@@ -838,6 +966,12 @@
                 flags: myMember.flags ?? 0
             };
 
+            const rolePresentation = getTargetRolePresentation(
+                GuildRoleStore,
+                guildId,
+                targetMember
+            );
+
             const spoofed = {
                 roles: Array.isArray(targetMember.roles) ? [...targetMember.roles] : [],
                 // Keep YOUR visible profile identity; only copy server roles.
@@ -848,10 +982,36 @@
                 pending: Boolean(myMember.pending),
                 joined_at: targetMember.joined_at ?? targetMember.joinedAt ?? myMember.joined_at ?? myMember.joinedAt ?? new Date().toISOString(),
                 flags: myMember.flags ?? 0
+                hoistRoleId: rolePresentation.hoistRoleId,
+                hoist_role_id: rolePresentation.hoistRoleId,
+                colorRoleId: rolePresentation.colorRoleId,
+                color_role_id: rolePresentation.colorRoleId,
+                color: rolePresentation.color,
+                colorString: rolePresentation.colorString,
+                color_string: rolePresentation.colorString,
             };
 
             dispatchLocalMemberUpdate(Dispatcher, guildId, me, spoofed);
             dispatchLocalHierarchyUpdate(Dispatcher, guildId, me, spoofed);
+
+            // A second local refresh after the spoof record has been saved helps
+            // member-list/profile consumers that calculate hoist/color lazily.
+            setTimeout(() => {
+                try {
+                    dispatchLocalMemberUpdate(
+                        Dispatcher,
+                        guildId,
+                        me,
+                        spoofed
+                    );
+                    dispatchLocalHierarchyUpdate(
+                        Dispatcher,
+                        guildId,
+                        me,
+                        spoofed
+                    );
+                } catch {}
+            }, 250);
 
             saveRoleSwap({
                 guildId,
